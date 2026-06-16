@@ -52,11 +52,17 @@ image-search search "person wearing glasses" --embedder stub
 image-search status
 ```
 
-Local model mode:
+Local model mode uses Moondream 2 by default:
 
 ```bash
 image-search index ~/Pictures/TestPhotos --captioner moondream --embedder sentence-transformers
 image-search search "selfie in mirror" --embedder sentence-transformers
+```
+
+To override the Moondream model:
+
+```bash
+MOONDREAM_MODEL=moondream3-preview image-search index ~/Pictures/TestPhotos --captioner moondream --embedder sentence-transformers
 ```
 
 By default, the database lives at:

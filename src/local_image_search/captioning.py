@@ -32,7 +32,7 @@ class StubCaptioner(Captioner):
 
 
 class MoondreamCaptioner(Captioner):
-    name = "moondream-local"
+    default_model = "moondream2"
 
     def __init__(self) -> None:
         try:
@@ -51,7 +51,13 @@ class MoondreamCaptioner(Captioner):
             register_heif_opener()
 
         self._image_class = Image
-        kwargs = {"local": True}
+        model_name = os.environ.get("MOONDREAM_MODEL", self.default_model)
+        self.name = f"moondream-local/{model_name}"
+        kwargs = {
+            "local": True,
+            "model": model_name,
+            "max_batch_size": 1,
+        }
         api_key = os.environ.get("MOONDREAM_API_KEY")
         if api_key:
             kwargs["api_key"] = api_key
