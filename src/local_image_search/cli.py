@@ -68,6 +68,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search_parser.set_defaults(handler=handle_search)
 
+    serve_parser = subparsers.add_parser("serve", help="Run the local search API")
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8765)
+    serve_parser.add_argument(
+        "--embedder",
+        default="stub",
+        choices=["stub", "sentence-transformers", "sentence-transformer", "st"],
+    )
+    serve_parser.set_defaults(handler=handle_serve)
+
     return parser
 
 
@@ -107,7 +117,11 @@ def handle_index(args: argparse.Namespace) -> int:
             if indexed % 10 == 0:
                 conn.commit()
                 print(f"indexed {indexed} images...")
-        deleted = delete_missing_paths(conn, [image.path for image in images]) if args.delete_missing else 0
+        deleted = (
+            delete_missing_paths(conn, [image.path for image in images])
+            if args.delete_missing
+            else 0
+        )
         conn.commit()
 
     print(f"scanned: {len(images)}")
@@ -132,6 +146,14 @@ def handle_search(args: argparse.Namespace) -> int:
     for result in results:
         print(f"{result.score:.3f}  {result.image.path}")
         print(f"       {result.image.caption}")
+    return 0
+
+
+def handle_serve(args: argparse.Namespace) -> int:
+    embedder = make_embedder(args.embedder)
+    from local_image_search.server import run_server
+
+    run_server(args.db, embedder, args.host, args.port)
     return 0
 
 

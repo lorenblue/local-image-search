@@ -66,7 +66,8 @@ class MoondreamCaptioner(Captioner):
         except TypeError as exc:
             raise RuntimeError(
                 "Moondream local setup failed. If this is the first model download, "
-                "set MOONDREAM_API_KEY and rerun; cached local inference should work offline after setup."
+                "set MOONDREAM_API_KEY and rerun; cached local inference should work "
+                "offline after setup."
             ) from exc
 
     def caption(self, image_path: Path) -> str:

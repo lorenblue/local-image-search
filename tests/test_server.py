@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from local_image_search.db import connect, init_db, upsert_indexed_image
+from local_image_search.embeddings import StubEmbedder
+from local_image_search.models import ImageFile
+from local_image_search.server import create_app
+
+
+def test_api_search_returns_ranked_results(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    embedder = StubEmbedder()
+    image = ImageFile(
+        path=tmp_path / "person-wearing-glasses.jpg",
+        file_name="person-wearing-glasses.jpg",
+        file_size=10,
+        created_at=None,
+        modified_at=1,
+    )
+    caption = "A person wearing glasses standing indoors"
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        upsert_indexed_image(
+            conn,
+            image,
+            caption,
+            caption_model="stub-captioner-v1",
+            embedding_model=embedder.name,
+            embedding=embedder.embed(caption),
+        )
+        conn.commit()
+
+    client = TestClient(create_app(db_path, embedder))
+
+    assert client.get("/health").json() == {"ok": True}
+    assert client.get("/status").json()["searchableImages"] == 1
+
+    response = client.get("/search", params={"q": "person with glasses", "limit": 1})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["results"][0]["fileName"] == "person-wearing-glasses.jpg"
+    assert body["results"][0]["caption"] == caption

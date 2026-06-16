@@ -38,7 +38,7 @@ python -m pip install -e ".[dev]"
 Optional local ML dependencies:
 
 ```bash
-python -m pip install -e ".[ml,heic]"
+python -m pip install -e ".[ml,heic,api]"
 ```
 
 ## CLI
@@ -57,6 +57,14 @@ Local model mode uses Moondream 2 by default:
 ```bash
 image-search index ~/Pictures/TestPhotos --captioner moondream --embedder sentence-transformers
 image-search search "selfie in mirror" --embedder sentence-transformers
+```
+
+Run a warm local search API:
+
+```bash
+python -m pip install -e ".[api]"
+image-search serve --embedder sentence-transformers
+curl "http://127.0.0.1:8765/search?q=selfie%20in%20mirror&limit=5"
 ```
 
 To override the Moondream model:
