@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 from local_image_search.captioning import make_captioner
@@ -17,6 +18,7 @@ from local_image_search.db import (
     upsert_indexed_image,
 )
 from local_image_search.embeddings import make_embedder
+from local_image_search.metrics import format_memory_status
 from local_image_search.scanner import scan_images
 from local_image_search.search import search_images
 
@@ -55,6 +57,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--delete-missing",
         action="store_true",
         help="Remove database records that were not seen during this scan",
+    )
+    index_parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=1,
+        help="Print indexing progress every N processed images",
     )
     index_parser.set_defaults(handler=handle_index)
 
@@ -101,22 +109,48 @@ def handle_index(args: argparse.Namespace) -> int:
     captioner = make_captioner(args.captioner)
     embedder = make_embedder(args.embedder)
     images = scan_images(args.roots)
+    total = len(images)
+    started = time.perf_counter()
+
+    print(f"found {total} supported images")
+    print(f"captioner: {captioner.name}")
+    print(f"embedder: {embedder.name}")
+    print(format_memory_status())
 
     with connect(args.db) as conn:
         init_db(conn)
         indexed = 0
         skipped = 0
+        processed = 0
         for image in images:
+            processed += 1
             if not needs_indexing(conn, image, captioner.name, embedder.name):
                 skipped += 1
+                _print_index_progress(
+                    processed=processed,
+                    total=total,
+                    indexed=indexed,
+                    skipped=skipped,
+                    started=started,
+                    file_name=image.file_name,
+                    progress_every=args.progress_every,
+                )
                 continue
             caption = captioner.caption(image.path)
             embedding = embedder.embed(caption)
             upsert_indexed_image(conn, image, caption, captioner.name, embedder.name, embedding)
             indexed += 1
+            _print_index_progress(
+                processed=processed,
+                total=total,
+                indexed=indexed,
+                skipped=skipped,
+                started=started,
+                file_name=image.file_name,
+                progress_every=args.progress_every,
+            )
             if indexed % 10 == 0:
                 conn.commit()
-                print(f"indexed {indexed} images...")
         deleted = (
             delete_missing_paths(conn, [image.path for image in images])
             if args.delete_missing
@@ -130,6 +164,40 @@ def handle_index(args: argparse.Namespace) -> int:
     if args.delete_missing:
         print(f"deleted missing: {deleted}")
     return 0
+
+
+def _print_index_progress(
+    *,
+    processed: int,
+    total: int,
+    indexed: int,
+    skipped: int,
+    started: float,
+    file_name: str,
+    progress_every: int,
+) -> None:
+    if progress_every <= 0:
+        return
+    if processed != total and processed % progress_every != 0:
+        return
+
+    elapsed = time.perf_counter() - started
+    percent = (processed / total * 100) if total else 100.0
+    print(
+        f"[{processed}/{total} {percent:5.1f}%] "
+        f"indexed={indexed} skipped={skipped} "
+        f"elapsed={_format_elapsed(elapsed)} "
+        f"{format_memory_status()} "
+        f"last={file_name}"
+    )
+
+
+def _format_elapsed(seconds: float) -> str:
+    minutes, whole_seconds = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{whole_seconds:02d}"
+    return f"{minutes:d}:{whole_seconds:02d}"
 
 
 def handle_search(args: argparse.Namespace) -> int:

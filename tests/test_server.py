@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from local_image_search.db import connect, init_db, upsert_indexed_image
 from local_image_search.embeddings import StubEmbedder
+from local_image_search.metrics import memory_status
 from local_image_search.models import ImageFile
 from local_image_search.server import create_app
 
@@ -50,3 +51,10 @@ def test_api_search_returns_ranked_results(tmp_path: Path) -> None:
     body = response.json()
     assert body["results"][0]["fileName"] == "person-wearing-glasses.jpg"
     assert body["results"][0]["caption"] == caption
+
+
+def test_memory_status_reports_current_and_peak_memory() -> None:
+    memory = memory_status()
+
+    assert memory["currentMb"] > 0
+    assert memory["peakMb"] > 0
