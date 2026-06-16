@@ -67,6 +67,12 @@ image-search serve --embedder sentence-transformers
 curl "http://127.0.0.1:8765/search?q=selfie%20in%20mirror&limit=5"
 ```
 
+Open the local API reference at:
+
+```text
+http://127.0.0.1:8765/scalar
+```
+
 To override the Moondream model:
 
 ```bash

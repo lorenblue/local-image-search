@@ -62,11 +62,20 @@ class SearchService:
 def create_app(db_path: Path, embedder: Embedder):
     try:
         from fastapi import FastAPI, Query
+        from scalar_fastapi import get_scalar_api_reference
     except ImportError as exc:
         raise RuntimeError("FastAPI server requires: python -m pip install -e '.[api]'") from exc
 
     service = SearchService(db_path, embedder)
     app = FastAPI(title="Local Image Search API")
+
+    @app.get("/scalar", include_in_schema=False)
+    def scalar_reference():
+        return get_scalar_api_reference(
+            openapi_url=app.openapi_url,
+            title="Local Image Search API",
+            telemetry=False,
+        )
 
     @app.get("/health")
     def health() -> dict:

@@ -38,6 +38,7 @@ def test_api_search_returns_ranked_results(tmp_path: Path) -> None:
 
     assert client.get("/health").json() == {"ok": True}
     assert client.get("/status").json()["searchableImages"] == 1
+    assert client.get("/scalar").status_code == 200
 
     response = client.get("/search", params={"q": "person with glasses", "limit": 1})
 

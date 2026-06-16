@@ -19,12 +19,14 @@ heic = [
 ]
 api = [
   "fastapi>=0.115",
+  "scalar-fastapi>=1.8",
   "uvicorn[standard]>=0.32",
 ]
 dev = [
   "fastapi>=0.115",
   "pytest>=8.0",
   "ruff>=0.5",
+  "scalar-fastapi>=1.8",
   "uvicorn[standard]>=0.32",
 ]
 
