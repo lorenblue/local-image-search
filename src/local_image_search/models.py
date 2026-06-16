@@ -25,6 +25,7 @@ class IndexedImage:
     caption_model: str
     embedding_model: str
     embedding: list[float]
+    thumbnail_path: Path | None
 
 
 @dataclass(frozen=True)

@@ -34,6 +34,7 @@ def test_search_index_ranks_matching_caption_first() -> None:
             caption_model="stub",
             embedding_model=embedder.name,
             embedding=embedder.embed("A dog running on a beach"),
+            thumbnail_path=None,
         ),
         IndexedImage(
             id=2,
@@ -46,6 +47,7 @@ def test_search_index_ranks_matching_caption_first() -> None:
             caption_model="stub",
             embedding_model=embedder.name,
             embedding=embedder.embed("A woman sitting in a car"),
+            thumbnail_path=None,
         ),
     ]
 

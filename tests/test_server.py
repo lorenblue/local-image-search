@@ -32,6 +32,7 @@ def test_api_search_returns_ranked_results(tmp_path: Path) -> None:
             caption_model="stub-captioner-v1",
             embedding_model=embedder.name,
             embedding=embedder.embed(caption),
+            thumbnail_path=tmp_path / "thumb.jpg",
         )
         conn.commit()
 
@@ -51,6 +52,7 @@ def test_api_search_returns_ranked_results(tmp_path: Path) -> None:
     body = response.json()
     assert body["results"][0]["fileName"] == "person-wearing-glasses.jpg"
     assert body["results"][0]["caption"] == caption
+    assert body["results"][0]["thumbnailPath"] == str(tmp_path / "thumb.jpg")
 
 
 def test_memory_status_reports_current_and_peak_memory() -> None:

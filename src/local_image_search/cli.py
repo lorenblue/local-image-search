@@ -12,15 +12,18 @@ from local_image_search.db import (
     connect,
     count_images,
     delete_missing_paths,
+    get_thumbnail_path,
     init_db,
     list_indexed_images,
     needs_indexing,
+    update_thumbnail_path,
     upsert_indexed_image,
 )
 from local_image_search.embeddings import make_embedder
 from local_image_search.metrics import format_memory_status
 from local_image_search.scanner import scan_images
 from local_image_search.search import search_images
+from local_image_search.thumbnails import ensure_thumbnail
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -126,6 +129,7 @@ def handle_index(args: argparse.Namespace) -> int:
             processed += 1
             if not needs_indexing(conn, image, captioner.name, embedder.name):
                 skipped += 1
+                _ensure_stored_thumbnail(conn, image.path)
                 _print_index_progress(
                     processed=processed,
                     total=total,
@@ -138,7 +142,16 @@ def handle_index(args: argparse.Namespace) -> int:
                 continue
             caption = captioner.caption(image.path)
             embedding = embedder.embed(caption)
-            upsert_indexed_image(conn, image, caption, captioner.name, embedder.name, embedding)
+            thumbnail_path = ensure_thumbnail(image.path)
+            upsert_indexed_image(
+                conn,
+                image,
+                caption,
+                captioner.name,
+                embedder.name,
+                embedding,
+                thumbnail_path,
+            )
             indexed += 1
             _print_index_progress(
                 processed=processed,
@@ -164,6 +177,16 @@ def handle_index(args: argparse.Namespace) -> int:
     if args.delete_missing:
         print(f"deleted missing: {deleted}")
     return 0
+
+
+def _ensure_stored_thumbnail(conn: sqlite3.Connection, image_path: Path) -> None:
+    existing = get_thumbnail_path(conn, image_path)
+    if existing is not None and existing.exists():
+        return
+    thumbnail_path = ensure_thumbnail(image_path)
+    if thumbnail_path is None:
+        return
+    update_thumbnail_path(conn, image_path, thumbnail_path)
 
 
 def _print_index_progress(

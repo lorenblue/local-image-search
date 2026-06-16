@@ -39,6 +39,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             caption_model TEXT NOT NULL DEFAULT '',
             embedding_model TEXT NOT NULL DEFAULT '',
             embedding_json TEXT NOT NULL DEFAULT '',
+            thumbnail_path TEXT,
             indexed_at REAL NOT NULL DEFAULT 0
         );
 
@@ -46,6 +47,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_images_modified_at ON images(modified_at);
         """
     )
+    _add_column_if_missing(conn, "images", "thumbnail_path", "TEXT")
     conn.execute(
         """
         INSERT INTO schema_meta (key, value)
@@ -90,6 +92,7 @@ def upsert_indexed_image(
     caption_model: str,
     embedding_model: str,
     embedding: list[float],
+    thumbnail_path: Path | None,
 ) -> None:
     conn.execute(
         """
@@ -103,9 +106,10 @@ def upsert_indexed_image(
             caption_model,
             embedding_model,
             embedding_json,
+            thumbnail_path,
             indexed_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(path) DO UPDATE SET
             file_name = excluded.file_name,
             file_size = excluded.file_size,
@@ -115,6 +119,7 @@ def upsert_indexed_image(
             caption_model = excluded.caption_model,
             embedding_model = excluded.embedding_model,
             embedding_json = excluded.embedding_json,
+            thumbnail_path = excluded.thumbnail_path,
             indexed_at = excluded.indexed_at
         """,
         (
@@ -127,6 +132,7 @@ def upsert_indexed_image(
             caption_model,
             embedding_model,
             json.dumps(embedding),
+            str(thumbnail_path.resolve()) if thumbnail_path else None,
             time.time(),
         ),
     )
@@ -136,7 +142,7 @@ def list_indexed_images(conn: sqlite3.Connection) -> list[IndexedImage]:
     rows = conn.execute(
         """
         SELECT id, path, file_name, file_size, created_at, modified_at,
-               caption, caption_model, embedding_model, embedding_json
+               caption, caption_model, embedding_model, embedding_json, thumbnail_path
         FROM images
         WHERE caption != '' AND embedding_json != ''
         ORDER BY path
@@ -161,6 +167,31 @@ def count_images(conn: sqlite3.Connection) -> int:
     return int(row["count"])
 
 
+def get_thumbnail_path(conn: sqlite3.Connection, image_path: Path) -> Path | None:
+    row = conn.execute(
+        "SELECT thumbnail_path FROM images WHERE path = ?",
+        (str(image_path),),
+    ).fetchone()
+    if row is None or row["thumbnail_path"] is None:
+        return None
+    return Path(row["thumbnail_path"])
+
+
+def update_thumbnail_path(
+    conn: sqlite3.Connection,
+    image_path: Path,
+    thumbnail_path: Path,
+) -> None:
+    conn.execute(
+        """
+        UPDATE images
+        SET thumbnail_path = ?
+        WHERE path = ?
+        """,
+        (str(thumbnail_path.resolve()), str(image_path)),
+    )
+
+
 def _row_to_indexed_image(row: sqlite3.Row) -> IndexedImage:
     return IndexedImage(
         id=int(row["id"]),
@@ -173,4 +204,25 @@ def _row_to_indexed_image(row: sqlite3.Row) -> IndexedImage:
         caption_model=str(row["caption_model"]),
         embedding_model=str(row["embedding_model"]),
         embedding=[float(value) for value in json.loads(row["embedding_json"])],
+        thumbnail_path=_normalize_thumbnail_path(row["thumbnail_path"]),
     )
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    column_type: str,
+) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+
+
+def _normalize_thumbnail_path(value: str | None) -> Path | None:
+    if not value:
+        return None
+    return Path(value).expanduser().resolve()

@@ -49,6 +49,11 @@ class SearchService:
                     "caption": result.image.caption,
                     "captionModel": result.image.caption_model,
                     "embeddingModel": result.image.embedding_model,
+                    "thumbnailPath": (
+                        str(result.image.thumbnail_path)
+                        if result.image.thumbnail_path
+                        else None
+                    ),
                 }
                 for result in results
             ],
