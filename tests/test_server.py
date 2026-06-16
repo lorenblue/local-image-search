@@ -37,7 +37,11 @@ def test_api_search_returns_ranked_results(tmp_path: Path) -> None:
     client = TestClient(create_app(db_path, embedder))
 
     assert client.get("/health").json() == {"ok": True}
-    assert client.get("/status").json()["searchableImages"] == 1
+    status = client.get("/status").json()
+    assert status["searchableImages"] == 1
+    assert "memory" in status
+    assert status["memory"]["currentMb"] > 0
+    assert status["memory"]["peakMb"] > 0
     assert client.get("/scalar").status_code == 200
 
     response = client.get("/search", params={"q": "person with glasses", "limit": 1})

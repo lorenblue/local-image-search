@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import resource
+import sys
 import time
 from pathlib import Path
 
@@ -26,6 +28,7 @@ class SearchService:
             "database": str(self.db_path),
             "embedder": self.embedder.name,
             "indexedImages": total,
+            "memory": memory_status(),
             "searchableImages": self.index.size,
             "uptimeSeconds": round(time.time() - self.started_at, 3),
         }
@@ -117,3 +120,26 @@ def run_server(
     print(f"serving search API on http://{host}:{port}")
     print(f"loaded {service.index.size} searchable images with {embedder.name}")
     uvicorn.run(app, host=host, port=port)
+
+
+def memory_status() -> dict:
+    return {
+        "currentMb": _bytes_to_mb(_current_rss_bytes()),
+        "peakMb": _peak_rss_mb(),
+    }
+
+
+def _current_rss_bytes() -> int:
+    import psutil
+
+    return psutil.Process().memory_info().rss
+
+
+def _peak_rss_mb() -> float:
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    peak_bytes = usage.ru_maxrss if sys.platform == "darwin" else usage.ru_maxrss * 1024
+    return _bytes_to_mb(peak_bytes)
+
+
+def _bytes_to_mb(value: int) -> float:
+    return round(value / (1024 * 1024), 2)
