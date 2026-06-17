@@ -16,7 +16,7 @@ class Embedder(ABC):
 
 class StubEmbedder(Embedder):
     name = "stub-embedder-v1"
-    dimensions = 64
+    dimensions = 384
 
     def embed(self, text: str) -> list[float]:
         vector = [0.0] * self.dimensions

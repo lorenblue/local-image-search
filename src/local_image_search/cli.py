@@ -12,17 +12,19 @@ from local_image_search.db import (
     connect,
     count_images,
     delete_missing_paths,
+    ensure_vector_table,
+    get_image_id,
     get_thumbnail_path,
     init_db,
-    list_indexed_images,
     needs_indexing,
+    search_indexed_images,
     update_thumbnail_path,
+    upsert_image_embedding,
     upsert_indexed_image,
 )
 from local_image_search.embeddings import make_embedder
 from local_image_search.metrics import format_memory_status
 from local_image_search.scanner import scan_images
-from local_image_search.search import search_images
 from local_image_search.thumbnails import ensure_thumbnail
 
 
@@ -122,6 +124,7 @@ def handle_index(args: argparse.Namespace) -> int:
 
     with connect(args.db) as conn:
         init_db(conn)
+        ensure_vector_table(conn)
         indexed = 0
         skipped = 0
         processed = 0
@@ -130,6 +133,7 @@ def handle_index(args: argparse.Namespace) -> int:
             if not needs_indexing(conn, image, captioner.name, embedder.name):
                 skipped += 1
                 _ensure_stored_thumbnail(conn, image.path)
+                conn.commit()
                 _print_index_progress(
                     processed=processed,
                     total=total,
@@ -152,7 +156,10 @@ def handle_index(args: argparse.Namespace) -> int:
                 embedding,
                 thumbnail_path,
             )
+            image_id = get_image_id(conn, image.path)
+            upsert_image_embedding(conn, image_id, embedding)
             indexed += 1
+            conn.commit()
             _print_index_progress(
                 processed=processed,
                 total=total,
@@ -162,8 +169,6 @@ def handle_index(args: argparse.Namespace) -> int:
                 file_name=image.file_name,
                 progress_every=args.progress_every,
             )
-            if indexed % 10 == 0:
-                conn.commit()
         deleted = (
             delete_missing_paths(conn, [image.path for image in images])
             if args.delete_missing
@@ -227,9 +232,14 @@ def handle_search(args: argparse.Namespace) -> int:
     embedder = make_embedder(args.embedder)
     with connect(args.db) as conn:
         init_db(conn)
-        images = list_indexed_images(conn)
-
-    results = search_images(args.query, images, embedder, args.limit)
+        ensure_vector_table(conn)
+        conn.commit()
+        results = search_indexed_images(
+            conn,
+            embedder.embed(args.query),
+            embedder.name,
+            args.limit,
+        )
     if not results:
         print("no results")
         return 0

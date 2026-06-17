@@ -4,11 +4,18 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from local_image_search.db import connect, init_db, upsert_indexed_image
+from local_image_search.db import (
+    connect,
+    ensure_vector_table,
+    get_image_id,
+    init_db,
+    upsert_image_embedding,
+    upsert_indexed_image,
+)
 from local_image_search.embeddings import StubEmbedder
 from local_image_search.metrics import memory_status
 from local_image_search.models import ImageFile
-from local_image_search.server import create_app
+from local_image_search.server import SearchService, create_app
 
 
 def test_api_search_returns_ranked_results(tmp_path: Path) -> None:
@@ -25,15 +32,7 @@ def test_api_search_returns_ranked_results(tmp_path: Path) -> None:
 
     with connect(db_path) as conn:
         init_db(conn)
-        upsert_indexed_image(
-            conn,
-            image,
-            caption,
-            caption_model="stub-captioner-v1",
-            embedding_model=embedder.name,
-            embedding=embedder.embed(caption),
-            thumbnail_path=tmp_path / "thumb.jpg",
-        )
+        _insert_indexed_image(conn, image, caption, embedder, thumbnail_path=tmp_path / "thumb.jpg")
         conn.commit()
 
     client = TestClient(create_app(db_path, embedder))
@@ -60,3 +59,53 @@ def test_memory_status_reports_current_and_peak_memory() -> None:
 
     assert memory["currentMb"] > 0
     assert memory["peakMb"] > 0
+
+
+def test_search_service_finds_newly_committed_vectors(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    embedder = StubEmbedder()
+
+    with connect(db_path) as conn:
+        init_db(conn)
+
+    service = SearchService(db_path, embedder)
+    assert service.status()["searchableImages"] == 0
+
+    image = ImageFile(
+        path=tmp_path / "new-car.jpg",
+        file_name="new-car.jpg",
+        file_size=10,
+        created_at=None,
+        modified_at=1,
+    )
+    caption = "A woman sitting in a car"
+    with connect(db_path) as conn:
+        _insert_indexed_image(conn, image, caption, embedder, thumbnail_path=None)
+        conn.commit()
+
+    results = service.search("girl in car", limit=1)
+
+    assert service.status()["searchableImages"] == 1
+    assert results["results"][0]["fileName"] == "new-car.jpg"
+
+
+def _insert_indexed_image(
+    conn,
+    image: ImageFile,
+    caption: str,
+    embedder: StubEmbedder,
+    thumbnail_path: Path | None,
+) -> None:
+    embedding = embedder.embed(caption)
+    ensure_vector_table(conn)
+    upsert_indexed_image(
+        conn,
+        image,
+        caption,
+        caption_model="stub-captioner-v1",
+        embedding_model=embedder.name,
+        embedding=embedding,
+        thumbnail_path=thumbnail_path,
+    )
+    image_id = get_image_id(conn, image.path)
+    upsert_image_embedding(conn, image_id, embedding)

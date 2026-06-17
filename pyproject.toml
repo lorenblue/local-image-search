@@ -8,6 +8,7 @@ dependencies = [
   "numpy>=1.26",
   "pillow>=10.0",
   "psutil>=6.0",
+  "sqlite-vec>=0.1.9",
 ]
 
 [project.optional-dependencies]

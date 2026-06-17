@@ -6,18 +6,42 @@ import time
 from collections.abc import Iterable
 from pathlib import Path
 
-from local_image_search.models import ImageFile, IndexedImage
+from local_image_search.models import ImageFile, IndexedImage, SearchResult
 
 SCHEMA_VERSION = 1
+SQLITE_TIMEOUT_SECONDS = 30
+VECTOR_TABLE_NAME = "image_embeddings"
+VECTOR_DIMENSIONS = 384
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=SQLITE_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_TIMEOUT_SECONDS * 1000}")
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    load_sqlite_vec(conn)
     return conn
+
+
+def connect_readonly(db_path: Path) -> sqlite3.Connection:
+    if not db_path.exists():
+        raise FileNotFoundError(f"Database does not exist: {db_path}")
+    uri = f"file:{db_path.resolve()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=SQLITE_TIMEOUT_SECONDS)
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_TIMEOUT_SECONDS * 1000}")
+    load_sqlite_vec(conn)
+    return conn
+
+
+def load_sqlite_vec(conn: sqlite3.Connection) -> None:
+    import sqlite_vec
+
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -138,6 +162,41 @@ def upsert_indexed_image(
     )
 
 
+def ensure_vector_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f"""
+        CREATE VIRTUAL TABLE IF NOT EXISTS {VECTOR_TABLE_NAME}
+        USING vec0(embedding float[{VECTOR_DIMENSIONS}])
+        """
+    )
+
+
+def upsert_image_embedding(
+    conn: sqlite3.Connection,
+    image_id: int,
+    embedding: list[float],
+) -> None:
+    _validate_embedding_dimensions(embedding)
+    conn.execute(
+        f"DELETE FROM {VECTOR_TABLE_NAME} WHERE rowid = ?",
+        (image_id,),
+    )
+    conn.execute(
+        f"INSERT INTO {VECTOR_TABLE_NAME} (rowid, embedding) VALUES (?, ?)",
+        (image_id, serialize_embedding(embedding)),
+    )
+
+
+def get_image_id(conn: sqlite3.Connection, image_path: Path) -> int:
+    row = conn.execute(
+        "SELECT id FROM images WHERE path = ?",
+        (str(image_path),),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Image was not found after upsert: {image_path}")
+    return int(row["id"])
+
+
 def list_indexed_images(conn: sqlite3.Connection) -> list[IndexedImage]:
     rows = conn.execute(
         """
@@ -149,6 +208,41 @@ def list_indexed_images(conn: sqlite3.Connection) -> list[IndexedImage]:
         """
     ).fetchall()
     return [_row_to_indexed_image(row) for row in rows]
+
+
+def search_indexed_images(
+    conn: sqlite3.Connection,
+    query_embedding: list[float],
+    embedding_model: str,
+    limit: int,
+) -> list[SearchResult]:
+    _validate_embedding_dimensions(query_embedding)
+    if not vector_table_exists(conn):
+        return []
+    rows = conn.execute(
+        f"""
+        SELECT images.id, images.path, images.file_name, images.file_size,
+               images.created_at, images.modified_at, images.caption,
+               images.caption_model, images.embedding_model,
+               images.embedding_json, images.thumbnail_path,
+               matches.distance,
+               (1.0 - ((matches.distance * matches.distance) / 2.0)) AS score
+        FROM {VECTOR_TABLE_NAME} AS matches
+        JOIN images ON images.id = matches.rowid
+        WHERE matches.embedding MATCH ?
+          AND matches.k = ?
+          AND images.embedding_model = ?
+        ORDER BY matches.distance
+        """,
+        (serialize_embedding(query_embedding), limit, embedding_model),
+    ).fetchall()
+    return [
+        SearchResult(
+            image=_row_to_indexed_image(row),
+            score=float(row["score"]),
+        )
+        for row in rows
+    ]
 
 
 def delete_missing_paths(conn: sqlite3.Connection, seen_paths: Iterable[Path]) -> int:
@@ -165,6 +259,35 @@ def delete_missing_paths(conn: sqlite3.Connection, seen_paths: Iterable[Path]) -
 def count_images(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COUNT(*) AS count FROM images").fetchone()
     return int(row["count"])
+
+
+def count_searchable_images(
+    conn: sqlite3.Connection,
+    embedding_model: str,
+) -> int:
+    if not vector_table_exists(conn):
+        return 0
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS count
+        FROM {VECTOR_TABLE_NAME}
+        JOIN images ON images.id = {VECTOR_TABLE_NAME}.rowid
+        WHERE images.embedding_model = ?
+        """,
+        (embedding_model,),
+    ).fetchone()
+    return int(row["count"])
+
+
+def index_version(conn: sqlite3.Connection) -> tuple[int, float]:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS count, COALESCE(MAX(indexed_at), 0) AS latest_indexed_at
+        FROM images
+        WHERE caption != '' AND embedding_json != ''
+        """
+    ).fetchone()
+    return int(row["count"]), float(row["latest_indexed_at"])
 
 
 def get_thumbnail_path(conn: sqlite3.Connection, image_path: Path) -> Path | None:
@@ -226,3 +349,28 @@ def _normalize_thumbnail_path(value: str | None) -> Path | None:
     if not value:
         return None
     return Path(value).expanduser().resolve()
+
+
+def serialize_embedding(embedding: list[float]) -> bytes:
+    import sqlite_vec
+
+    return sqlite_vec.serialize_float32(embedding)
+
+
+def vector_table_exists(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = ?
+        """,
+        (VECTOR_TABLE_NAME,),
+    ).fetchone()
+    return row is not None
+
+
+def _validate_embedding_dimensions(embedding: list[float]) -> None:
+    if len(embedding) != VECTOR_DIMENSIONS:
+        raise ValueError(
+            f"Expected {VECTOR_DIMENSIONS} embedding dimensions, got {len(embedding)}"
+        )

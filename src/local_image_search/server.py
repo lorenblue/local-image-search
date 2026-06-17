@@ -3,10 +3,14 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from local_image_search.db import connect, count_images, init_db, list_indexed_images
+from local_image_search.db import (
+    connect_readonly,
+    count_images,
+    count_searchable_images,
+    search_indexed_images,
+)
 from local_image_search.embeddings import Embedder
 from local_image_search.metrics import memory_status
-from local_image_search.search import SearchIndex
 
 
 class SearchService:
@@ -14,27 +18,33 @@ class SearchService:
         self.db_path = db_path
         self.embedder = embedder
         self.started_at = time.time()
-        self.index = self._load_index()
-
-    def reload(self) -> None:
-        self.index = self._load_index()
+        if embedder.dimensions != 384:
+            raise ValueError(
+                f"sqlite-vec search expects 384-dimensional embeddings, got {embedder.dimensions}"
+            )
 
     def status(self) -> dict:
-        with connect(self.db_path) as conn:
-            init_db(conn)
+        with connect_readonly(self.db_path) as conn:
             total = count_images(conn)
+            searchable = count_searchable_images(conn, self.embedder.name)
         return {
             "database": str(self.db_path),
             "embedder": self.embedder.name,
             "indexedImages": total,
             "memory": memory_status(),
-            "searchableImages": self.index.size,
+            "searchableImages": searchable,
             "uptimeSeconds": round(time.time() - self.started_at, 3),
         }
 
     def search(self, query: str, limit: int) -> dict:
         started = time.perf_counter()
-        results = self.index.search(query, limit)
+        with connect_readonly(self.db_path) as conn:
+            results = search_indexed_images(
+                conn,
+                self.embedder.embed(query),
+                self.embedder.name,
+                limit,
+            )
         elapsed_ms = (time.perf_counter() - started) * 1000
         return {
             "query": query,
@@ -58,12 +68,6 @@ class SearchService:
                 for result in results
             ],
         }
-
-    def _load_index(self) -> SearchIndex:
-        with connect(self.db_path) as conn:
-            init_db(conn)
-            images = list_indexed_images(conn)
-        return SearchIndex(images, self.embedder)
 
 
 def create_app(db_path: Path, embedder: Embedder):
@@ -99,11 +103,6 @@ def create_app(db_path: Path, embedder: Embedder):
     ) -> dict:
         return service.search(q.strip(), limit)
 
-    @app.post("/reload")
-    def reload_index() -> dict:
-        service.reload()
-        return {"ok": True, "searchableImages": service.index.size}
-
     app.state.search_service = service
     return app
 
@@ -120,7 +119,6 @@ def run_server(
         raise RuntimeError("FastAPI server requires: python -m pip install -e '.[api]'") from exc
 
     app = create_app(db_path, embedder)
-    service = app.state.search_service
     print(f"serving search API on http://{host}:{port}")
-    print(f"loaded {service.index.size} searchable images with {embedder.name}")
+    print(f"using sqlite-vec search with {embedder.name}")
     uvicorn.run(app, host=host, port=port)
