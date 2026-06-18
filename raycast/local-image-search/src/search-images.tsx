@@ -58,6 +58,7 @@ export default function Command() {
   const [query, setQuery] = useState("");
   const [similarSource, setSimilarSource] = useState<SearchResult | null>(null);
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [selectedItemId, setSelectedItemId] = useState<string | undefined>();
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -96,6 +97,7 @@ export default function Command() {
     const trimmedQuery = query.trim();
     if (!trimmedQuery && !similarSource) {
       setResults([]);
+      setSelectedItemId(undefined);
       return;
     }
 
@@ -118,6 +120,7 @@ export default function Command() {
           controller.signal,
         );
         setResults(response.results);
+        setSelectedItemId(resultItemId(response.results[0]));
       } catch (unknownError) {
         if (!controller.signal.aborted) {
           setError(errorMessage(unknownError));
@@ -166,8 +169,10 @@ export default function Command() {
         query.trim() || !similarSource ? "Search Images" : "Similar Images"
       }
       onSearchTextChange={handleSearchTextChange}
+      onSelectionChange={(id) => setSelectedItemId(id ?? undefined)}
       searchBarPlaceholder={searchBarPlaceholder}
       searchText={query}
+      selectedItemId={selectedItemId}
       throttle
     >
       {!query.trim() && !similarSource && status ? (
@@ -175,7 +180,7 @@ export default function Command() {
       ) : null}
       {results.map((result) => (
         <ResultItem
-          key={result.id}
+          key={resultItemId(result)}
           result={result}
           onFindSimilar={() => {
             setSimilarSource(result);
@@ -196,6 +201,7 @@ function StatusItem({
 }) {
   return (
     <Grid.Item
+      id="status"
       title="Local Image Search"
       subtitle={`${status.searchableImages} searchable images · ${status.memory.currentMb.toFixed(0)} MB`}
       content={{ source: Icon.MagnifyingGlass }}
@@ -224,6 +230,7 @@ function ResultItem({
 
   return (
     <Grid.Item
+      id={resultItemId(result)}
       title={result.fileName}
       subtitle={scoreLabel(result.score)}
       content={content}
@@ -373,6 +380,10 @@ function normalizeBaseUrl(value: string): string {
 
 function scoreLabel(score: number): string {
   return score.toFixed(3);
+}
+
+function resultItemId(result: SearchResult | undefined): string | undefined {
+  return result ? String(result.id) : undefined;
 }
 
 function errorMessage(error: unknown): string {
