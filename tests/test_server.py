@@ -104,7 +104,6 @@ def _insert_indexed_image(
         caption,
         caption_model="stub-captioner-v1",
         embedding_model=embedder.name,
-        embedding=embedding,
         thumbnail_path=thumbnail_path,
     )
     image_id = get_image_id(conn, image.path)

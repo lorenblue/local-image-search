@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 import time
 from collections.abc import Iterable
@@ -8,7 +7,7 @@ from pathlib import Path
 
 from local_image_search.models import ImageFile, IndexedImage, SearchResult
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SQLITE_TIMEOUT_SECONDS = 30
 VECTOR_TABLE_NAME = "image_embeddings"
 VECTOR_DIMENSIONS = 384
@@ -62,7 +61,6 @@ def init_db(conn: sqlite3.Connection) -> None:
             caption TEXT NOT NULL DEFAULT '',
             caption_model TEXT NOT NULL DEFAULT '',
             embedding_model TEXT NOT NULL DEFAULT '',
-            embedding_json TEXT NOT NULL DEFAULT '',
             thumbnail_path TEXT,
             indexed_at REAL NOT NULL DEFAULT 0
         );
@@ -72,6 +70,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
     _add_column_if_missing(conn, "images", "thumbnail_path", "TEXT")
+    _drop_column_if_present(conn, "images", "embedding_json")
     conn.execute(
         """
         INSERT INTO schema_meta (key, value)
@@ -89,9 +88,11 @@ def needs_indexing(
     caption_model: str,
     embedding_model: str,
 ) -> bool:
+    vector_exists_sql = _vector_exists_sql(conn)
     row = conn.execute(
-        """
-        SELECT file_size, modified_at, caption_model, embedding_model, caption, embedding_json
+        f"""
+        SELECT file_size, modified_at, caption_model, embedding_model, caption,
+               {vector_exists_sql} AS has_embedding
         FROM images
         WHERE path = ?
         """,
@@ -105,7 +106,7 @@ def needs_indexing(
         or row["caption_model"] != caption_model
         or row["embedding_model"] != embedding_model
         or not row["caption"]
-        or not row["embedding_json"]
+        or not row["has_embedding"]
     )
 
 
@@ -115,7 +116,6 @@ def upsert_indexed_image(
     caption: str,
     caption_model: str,
     embedding_model: str,
-    embedding: list[float],
     thumbnail_path: Path | None,
 ) -> None:
     conn.execute(
@@ -129,11 +129,10 @@ def upsert_indexed_image(
             caption,
             caption_model,
             embedding_model,
-            embedding_json,
             thumbnail_path,
             indexed_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(path) DO UPDATE SET
             file_name = excluded.file_name,
             file_size = excluded.file_size,
@@ -142,7 +141,6 @@ def upsert_indexed_image(
             caption = excluded.caption,
             caption_model = excluded.caption_model,
             embedding_model = excluded.embedding_model,
-            embedding_json = excluded.embedding_json,
             thumbnail_path = excluded.thumbnail_path,
             indexed_at = excluded.indexed_at
         """,
@@ -155,7 +153,6 @@ def upsert_indexed_image(
             caption,
             caption_model,
             embedding_model,
-            json.dumps(embedding),
             str(thumbnail_path.resolve()) if thumbnail_path else None,
             time.time(),
         ),
@@ -197,19 +194,6 @@ def get_image_id(conn: sqlite3.Connection, image_path: Path) -> int:
     return int(row["id"])
 
 
-def list_indexed_images(conn: sqlite3.Connection) -> list[IndexedImage]:
-    rows = conn.execute(
-        """
-        SELECT id, path, file_name, file_size, created_at, modified_at,
-               caption, caption_model, embedding_model, embedding_json, thumbnail_path
-        FROM images
-        WHERE caption != '' AND embedding_json != ''
-        ORDER BY path
-        """
-    ).fetchall()
-    return [_row_to_indexed_image(row) for row in rows]
-
-
 def search_indexed_images(
     conn: sqlite3.Connection,
     query_embedding: list[float],
@@ -224,7 +208,7 @@ def search_indexed_images(
         SELECT images.id, images.path, images.file_name, images.file_size,
                images.created_at, images.modified_at, images.caption,
                images.caption_model, images.embedding_model,
-               images.embedding_json, images.thumbnail_path,
+               images.thumbnail_path,
                matches.distance,
                (1.0 - ((matches.distance * matches.distance) / 2.0)) AS score
         FROM {VECTOR_TABLE_NAME} AS matches
@@ -251,6 +235,11 @@ def delete_missing_paths(conn: sqlite3.Connection, seen_paths: Iterable[Path]) -
     deleted = 0
     for row in rows:
         if row["path"] not in seen:
+            if vector_table_exists(conn):
+                conn.execute(
+                    f"DELETE FROM {VECTOR_TABLE_NAME} WHERE rowid = ?",
+                    (row["id"],),
+                )
             conn.execute("DELETE FROM images WHERE id = ?", (row["id"],))
             deleted += 1
     return deleted
@@ -280,14 +269,42 @@ def count_searchable_images(
 
 
 def index_version(conn: sqlite3.Connection) -> tuple[int, float]:
+    if not vector_table_exists(conn):
+        return 0, 0
     row = conn.execute(
-        """
+        f"""
         SELECT COUNT(*) AS count, COALESCE(MAX(indexed_at), 0) AS latest_indexed_at
-        FROM images
-        WHERE caption != '' AND embedding_json != ''
+        FROM {VECTOR_TABLE_NAME}
+        JOIN images ON images.id = {VECTOR_TABLE_NAME}.rowid
+        WHERE images.caption != ''
         """
     ).fetchone()
     return int(row["count"]), float(row["latest_indexed_at"])
+
+
+def _drop_column_if_present(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name not in columns:
+        return
+    conn.execute(f"ALTER TABLE {table_name} DROP COLUMN {column_name}")
+
+
+def _vector_exists_sql(conn: sqlite3.Connection) -> str:
+    if not vector_table_exists(conn):
+        return "0"
+    return (
+        "EXISTS ("
+        f"SELECT 1 FROM {VECTOR_TABLE_NAME} "
+        f"WHERE {VECTOR_TABLE_NAME}.rowid = images.id"
+        ")"
+    )
 
 
 def get_thumbnail_path(conn: sqlite3.Connection, image_path: Path) -> Path | None:
@@ -326,7 +343,7 @@ def _row_to_indexed_image(row: sqlite3.Row) -> IndexedImage:
         caption=str(row["caption"]),
         caption_model=str(row["caption_model"]),
         embedding_model=str(row["embedding_model"]),
-        embedding=[float(value) for value in json.loads(row["embedding_json"])],
+        embedding=[],
         thumbnail_path=_normalize_thumbnail_path(row["thumbnail_path"]),
     )
 

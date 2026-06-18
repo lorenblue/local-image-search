@@ -6,6 +6,19 @@ from pathlib import Path
 from local_image_search.db import connect, connect_readonly, init_db
 
 
+def test_init_db_does_not_store_embedding_json(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    with connect(db_path) as conn:
+        init_db(conn)
+
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(images)").fetchall()
+        }
+
+    assert "embedding_json" not in columns
+
+
 def test_connect_readonly_reads_without_allowing_writes(tmp_path: Path) -> None:
     db_path = tmp_path / "images.db"
     with connect(db_path) as conn:

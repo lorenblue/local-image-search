@@ -153,7 +153,6 @@ def handle_index(args: argparse.Namespace) -> int:
                 caption,
                 captioner.name,
                 embedder.name,
-                embedding,
                 thumbnail_path,
             )
             image_id = get_image_id(conn, image.path)
