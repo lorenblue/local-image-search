@@ -1,28 +1,56 @@
 # Local Image Search
 
-Local-first semantic image search for macOS.
+Local Image Search is a local-first macOS image search tool. It indexes folders
+with CLIP embeddings, stores vectors in SQLite, and exposes natural language and
+visual similarity search through a local FastAPI service and Raycast extension.
 
-Current scope:
+The goal is simple: search local photos with queries like `red sports car`,
+`person wearing glasses`, or `selfie in mirror` without sending image data to a
+cloud service.
 
-- scan local image folders
-- embed images locally with CLIP
-- store metadata and vectors in SQLite
-- search with natural language
-- use Raycast as the desktop UI
+## Features
 
-## Privacy
+- Recursive indexing for JPG, JPEG, PNG, HEIC, and WEBP images
+- Local OpenCLIP image and text embeddings
+- SQLite metadata storage with sqlite-vec vector search
+- Incremental indexing based on path, size, modified time, and model name
+- Automatic pruning of deleted files under scanned folders
+- FastAPI API with Scalar docs
+- Raycast UI with thumbnail results, paste/copy/open actions, Quick Look, and
+  visual similarity search
 
-Images stay on the machine. Model downloads may require network access during setup, but
-indexing and search run offline after the model is cached.
+## Privacy Model
 
-## Status
+Images stay on the machine. Setup may download model weights and Python/Node
+dependencies, but indexing and search run offline after the model is cached.
 
-- recursive scanner for JPG, JPEG, PNG, HEIC, and WEBP
-- SQLite index with sqlite-vec
-- incremental skip logic based on path, size, mtime, and model name
-- OpenCLIP image/text embeddings
-- FastAPI local search service
-- Raycast extension
+## How It Works
+
+```text
+folders -> scanner -> CLIP image embeddings -> SQLite/sqlite-vec
+query   -> CLIP text embedding  -> vector search -> ranked image results
+image   -> CLIP image embedding -> vector search -> visually similar images
+```
+
+CLIP maps both images and text into the same vector space. That lets the app
+compare a text query such as `dog on beach` against stored image vectors, or
+compare one image vector against the rest of the index for visual similarity.
+
+## Architecture
+
+```text
+src/local_image_search/
+  cli.py              CLI for init, index, search, similar, and serve
+  clip.py             OpenCLIP and test embedder implementations
+  db.py               SQLite schema, sqlite-vec integration, and search queries
+  scanner.py          Recursive image discovery
+  search_service.py   Shared search/status service used by CLI and API
+  server.py           FastAPI local API
+  thumbnails.py       Local thumbnail cache
+
+raycast/local-image-search/
+  src/search-images.tsx   Raycast grid UI
+```
 
 ## Setup
 
@@ -70,11 +98,7 @@ npm install
 npm run dev
 ```
 
-To override the OpenCLIP model:
-
-```bash
-CLIP_MODEL=ViT-B-16 CLIP_PRETRAINED=datacomp_xl_s13b_b90k image-search index ~/Pictures/TestPhotos
-```
+## Configuration
 
 By default, the database lives at:
 
@@ -88,21 +112,23 @@ Override it with:
 image-search --db /path/to/images.db status
 ```
 
-## Layout
+To override the OpenCLIP model:
 
-```text
-src/local_image_search/
-  cli.py            command line entrypoint
-  clip.py           CLIP image/text embedder implementations
-  config.py         paths and supported image formats
-  db.py             SQLite schema and repositories
-  scanner.py        recursive folder scanning
-  server.py         FastAPI local search service
-  thumbnails.py     thumbnail cache
+```bash
+CLIP_MODEL=ViT-B-16 CLIP_PRETRAINED=datacomp_xl_s13b_b90k image-search index ~/Pictures/TestPhotos
 ```
 
-## Next
+## What This Project Demonstrates
+
+- Designing a local-first AI workflow for private media
+- Evaluating caption-based search versus direct CLIP embedding search
+- Using SQLite as both metadata storage and a lightweight vector index
+- Keeping CLI and API behavior shared through a service layer
+- Building a desktop workflow around a local API with Raycast
+
+## Future Work
 
 1. Compare OpenCLIP models on real photos.
 2. Add OCR as a separate searchable field for text inside images.
-3. Consider a stronger model once the 512-dim baseline is well understood.
+3. Add saved searches or folder presets.
+4. Explore face clustering without identity recognition.
