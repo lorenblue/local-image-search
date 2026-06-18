@@ -16,12 +16,12 @@ from local_image_search.db import (
     get_thumbnail_path,
     init_db,
     needs_indexing,
-    search_indexed_images,
     update_thumbnail_path,
     upsert_indexed_image,
 )
 from local_image_search.metrics import format_memory_status
 from local_image_search.scanner import scan_images
+from local_image_search.search_service import SearchService
 from local_image_search.thumbnails import ensure_thumbnail
 
 
@@ -232,48 +232,23 @@ def _format_elapsed(seconds: float) -> str:
 
 def handle_search(args: argparse.Namespace) -> int:
     clip_embedder = make_clip_embedder(args.clip_embedder)
-    with connect(args.db) as conn:
-        init_db(conn)
-        ensure_vector_table(conn)
-        conn.commit()
-        results = search_indexed_images(
-            conn,
-            clip_embedder.embed_text(args.query),
-            clip_embedder.name,
-            args.limit,
-        )
-    if not results:
-        print("no results")
-        return 0
-
-    for result in results:
-        print(f"{result.score:.3f}  {result.image.path}")
-    return 0
+    response = SearchService(args.db, clip_embedder).search(args.query, args.limit)
+    return _print_results(response["results"])
 
 
 def handle_similar(args: argparse.Namespace) -> int:
-    image_path = args.image.expanduser().resolve()
-    if not image_path.exists():
-        raise FileNotFoundError(f"Image does not exist: {image_path}")
-
     clip_embedder = make_clip_embedder(args.clip_embedder)
-    with connect(args.db) as conn:
-        init_db(conn)
-        ensure_vector_table(conn)
-        conn.commit()
-        results = search_indexed_images(
-            conn,
-            clip_embedder.embed_image(image_path),
-            clip_embedder.name,
-            args.limit,
-            exclude_path=image_path,
-        )
+    response = SearchService(args.db, clip_embedder).similar(args.image, args.limit)
+    return _print_results(response["results"])
+
+
+def _print_results(results: list[dict]) -> int:
     if not results:
         print("no results")
         return 0
 
     for result in results:
-        print(f"{result.score:.3f}  {result.image.path}")
+        print(f"{result['score']:.3f}  {result['path']}")
     return 0
 
 

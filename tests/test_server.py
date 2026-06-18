@@ -8,7 +8,8 @@ from local_image_search.clip import StubClipEmbedder
 from local_image_search.db import connect, ensure_vector_table, init_db, upsert_indexed_image
 from local_image_search.metrics import memory_status
 from local_image_search.models import ImageFile
-from local_image_search.server import SearchService, create_app
+from local_image_search.search_service import SearchService
+from local_image_search.server import create_app
 
 
 def test_api_search_returns_ranked_clip_results(tmp_path: Path) -> None:
