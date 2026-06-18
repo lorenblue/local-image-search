@@ -192,6 +192,12 @@ function ResultItem({ result }: { result: SearchResult }) {
       actions={
         <ActionPanel>
           <ActionPanel.Section>
+            <Action.Paste title="Paste Image" content={{ file: result.path }} />
+            <Action.CopyToClipboard
+              title="Copy Image"
+              content={{ file: result.path }}
+              shortcut={{ modifiers: ["cmd"], key: "enter" }}
+            />
             <Action
               title="Open Image"
               icon={Icon.Image}
@@ -201,10 +207,6 @@ function ResultItem({ result }: { result: SearchResult }) {
             <Action.ShowInFinder path={result.path} />
           </ActionPanel.Section>
           <ActionPanel.Section>
-            <Action.CopyToClipboard
-              title="Copy Image"
-              content={{ file: result.path }}
-            />
             <Action.Push
               title="Show Details"
               icon={Icon.Text}
@@ -255,6 +257,12 @@ function ResultDetail({ result }: { result: SearchResult }) {
       }
       actions={
         <ActionPanel>
+          <Action.Paste title="Paste Image" content={{ file: result.path }} />
+          <Action.CopyToClipboard
+            title="Copy Image"
+            content={{ file: result.path }}
+            shortcut={{ modifiers: ["cmd"], key: "enter" }}
+          />
           <Action
             title="Open Image"
             icon={Icon.Image}
@@ -262,10 +270,6 @@ function ResultDetail({ result }: { result: SearchResult }) {
           />
           <Action.ToggleQuickLook />
           <Action.ShowInFinder path={result.path} />
-          <Action.CopyToClipboard
-            title="Copy Image"
-            content={{ file: result.path }}
-          />
           <Action.CopyToClipboard title="Copy Path" content={result.path} />
           <Action.CopyToClipboard
             title="Copy Caption"
