@@ -12,7 +12,6 @@ import { useEffect, useMemo, useState } from "react";
 
 type Preferences = {
   apiBaseUrl: string;
-  searchMode: "caption" | "clip";
 };
 
 type SearchResult = {
@@ -20,8 +19,6 @@ type SearchResult = {
   path: string;
   fileName: string;
   score: number;
-  caption: string;
-  captionModel: string;
   embeddingModel: string;
   thumbnailPath: string | null;
 };
@@ -29,18 +26,15 @@ type SearchResult = {
 type SearchResponse = {
   query: string;
   limit: number;
-  mode: "caption" | "clip";
   elapsedMs: number;
   results: SearchResult[];
 };
 
 type StatusResponse = {
   database: string;
-  embedder: string;
-  clipEmbedder: string | null;
+  clipEmbedder: string;
   indexedImages: number;
   searchableImages: number;
-  clipSearchableImages: number;
   memory: {
     currentMb: number;
     peakMb: number;
@@ -53,7 +47,6 @@ const DEFAULT_LIMIT = 30;
 export default function Command() {
   const preferences = getPreferenceValues<Preferences>();
   const apiBaseUrl = normalizeBaseUrl(preferences.apiBaseUrl);
-  const searchMode = preferences.searchMode;
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -105,7 +98,6 @@ export default function Command() {
         const url = new URL(`${apiBaseUrl}/search`);
         url.searchParams.set("q", trimmedQuery);
         url.searchParams.set("limit", String(DEFAULT_LIMIT));
-        url.searchParams.set("mode", searchMode);
         const response = await fetchJson<SearchResponse>(
           url.toString(),
           controller.signal,
@@ -126,18 +118,14 @@ export default function Command() {
       clearTimeout(timeout);
       controller.abort();
     };
-  }, [apiBaseUrl, query, searchMode]);
+  }, [apiBaseUrl, query]);
 
   const searchBarPlaceholder = useMemo(() => {
     if (status) {
-      const count =
-        searchMode === "clip"
-          ? status.clipSearchableImages
-          : status.searchableImages;
-      return `Search ${count} indexed images`;
+      return `Search ${status.searchableImages} indexed images`;
     }
     return "Search indexed images";
-  }, [searchMode, status]);
+  }, [status]);
 
   if (error) {
     return <ServerError apiBaseUrl={apiBaseUrl} message={error} />;
@@ -155,11 +143,7 @@ export default function Command() {
       throttle
     >
       {!query.trim() && status ? (
-        <StatusItem
-          status={status}
-          apiBaseUrl={apiBaseUrl}
-          searchMode={searchMode}
-        />
+        <StatusItem status={status} apiBaseUrl={apiBaseUrl} />
       ) : null}
       {results.map((result) => (
         <ResultItem key={result.id} result={result} />
@@ -171,21 +155,14 @@ export default function Command() {
 function StatusItem({
   status,
   apiBaseUrl,
-  searchMode,
 }: {
   status: StatusResponse;
   apiBaseUrl: string;
-  searchMode: "caption" | "clip";
 }) {
-  const searchableImages =
-    searchMode === "clip"
-      ? status.clipSearchableImages
-      : status.searchableImages;
-
   return (
     <Grid.Item
       title="Local Image Search"
-      subtitle={`${searchableImages} searchable images · ${status.memory.currentMb.toFixed(0)} MB`}
+      subtitle={`${status.searchableImages} searchable images · ${status.memory.currentMb.toFixed(0)} MB`}
       content={{ source: Icon.MagnifyingGlass }}
       actions={
         <ActionPanel>
@@ -234,10 +211,6 @@ function ResultItem({ result }: { result: SearchResult }) {
               target={<ResultDetail result={result} />}
             />
             <Action.CopyToClipboard title="Copy Path" content={result.path} />
-            <Action.CopyToClipboard
-              title="Copy Caption"
-              content={result.caption}
-            />
           </ActionPanel.Section>
         </ActionPanel>
       }
@@ -255,10 +228,6 @@ function ResultDetail({ result }: { result: SearchResult }) {
     `**Score:** ${scoreLabel(result.score)}`,
     "",
     `**Path:** \`${result.path}\``,
-    "",
-    "## Caption",
-    "",
-    result.caption,
   ]
     .filter(Boolean)
     .join("\n");
@@ -292,10 +261,6 @@ function ResultDetail({ result }: { result: SearchResult }) {
           <Action.ToggleQuickLook />
           <Action.ShowInFinder path={result.path} />
           <Action.CopyToClipboard title="Copy Path" content={result.path} />
-          <Action.CopyToClipboard
-            title="Copy Caption"
-            content={result.caption}
-          />
         </ActionPanel>
       }
     />
@@ -319,7 +284,7 @@ function ServerError({
     "```bash",
     "cd path/to/local-image-search",
     "source .venv/bin/activate",
-    "image-search serve --embedder sentence-transformers",
+    "image-search serve",
     "```",
     "",
     `Error: \`${message}\``,

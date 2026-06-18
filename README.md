@@ -5,26 +5,24 @@ Local-first semantic image search for macOS.
 Current scope:
 
 - scan local image folders
-- caption images locally
-- embed captions locally
-- store metadata and embeddings in SQLite
+- embed images locally with CLIP
+- store metadata and vectors in SQLite
 - search with natural language
-
-The eventual UI target is a Raycast extension backed by a local service. The first version is a CLI so the model/search path can be tested before building UI.
+- use Raycast as the desktop UI
 
 ## Privacy
 
-Images should stay on the machine. Model downloads may require network access during setup, but indexing and search should run offline after that.
+Images stay on the machine. Model downloads may require network access during setup, but
+indexing and search run offline after the model is cached.
 
 ## Status
 
 - recursive scanner for JPG, JPEG, PNG, HEIC, and WEBP
-- SQLite index
-- incremental skip logic based on path, size, mtime, and model names
-- stub captioner/embedder for smoke tests
-- Moondream captioner hook
-- sentence-transformers embedder hook
-- cosine similarity search
+- SQLite index with sqlite-vec
+- incremental skip logic based on path, size, mtime, and model name
+- OpenCLIP image/text embeddings
+- FastAPI local search service
+- Raycast extension
 
 ## Setup
 
@@ -32,47 +30,30 @@ Images should stay on the machine. Model downloads may require network access du
 cd path/to/local-image-search
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[dev]"
-```
-
-Optional local ML dependencies:
-
-```bash
 python -m pip install -e ".[ml,heic,api]"
 ```
 
 ## CLI
 
-Stub mode does not require model downloads:
+Index a folder:
 
 ```bash
 image-search init
-image-search index ~/Pictures/test-images --captioner stub --embedder stub
-image-search search "person wearing glasses" --embedder stub
-image-search status
+image-search index ~/Pictures/TestPhotos
 ```
 
-Local model mode uses Moondream 2 by default:
+Search from the terminal:
 
 ```bash
-image-search index ~/Pictures/TestPhotos --captioner moondream --embedder sentence-transformers
-image-search search "selfie in mirror" --embedder sentence-transformers
+image-search search "red sports car"
+image-search search "person wearing glasses" --limit 20
 ```
 
-CLIP mode searches direct image embeddings instead of generated captions:
+Run the local search API:
 
 ```bash
-image-search index-clip ~/Pictures/TestPhotos --clip-embedder open-clip
-image-search search "red sports car" --mode clip --clip-embedder open-clip
-```
-
-Run a warm local search API:
-
-```bash
-python -m pip install -e ".[api]"
-image-search serve --embedder sentence-transformers --clip-embedder open-clip
+image-search serve
 curl "http://127.0.0.1:8765/search?q=selfie%20in%20mirror&limit=5"
-curl "http://127.0.0.1:8765/search?q=red%20sports%20car&mode=clip&limit=5"
 ```
 
 Open the local API reference at:
@@ -89,10 +70,10 @@ npm install
 npm run dev
 ```
 
-To override the Moondream model:
+To override the OpenCLIP model:
 
 ```bash
-MOONDREAM_MODEL=moondream3-preview image-search index ~/Pictures/TestPhotos --captioner moondream --embedder sentence-transformers
+CLIP_MODEL=ViT-B-16 CLIP_PRETRAINED=datacomp_xl_s13b_b90k image-search index ~/Pictures/TestPhotos
 ```
 
 By default, the database lives at:
@@ -112,17 +93,16 @@ image-search --db /path/to/images.db status
 ```text
 src/local_image_search/
   cli.py            command line entrypoint
+  clip.py           CLIP image/text embedder implementations
   config.py         paths and supported image formats
   db.py             SQLite schema and repositories
   scanner.py        recursive folder scanning
-  captioning.py     captioner interface and implementations
-  clip.py           CLIP image/text embedder implementations
-  embeddings.py     embedder interface and implementations
-  search.py         cosine similarity ranking
+  server.py         FastAPI local search service
+  thumbnails.py     thumbnail cache
 ```
 
 ## Next
 
-1. Compare caption search and CLIP search on real photos.
-2. Tune the caption prompt if captions miss important search terms.
-3. Try hybrid ranking if caption and CLIP results complement each other.
+1. Compare OpenCLIP models on real photos.
+2. Add OCR as a separate searchable field for text inside images.
+3. Consider a stronger model once the 512-dim baseline is well understood.

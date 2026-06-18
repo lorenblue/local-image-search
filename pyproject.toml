@@ -5,7 +5,6 @@ description = "Local-first semantic image search for macOS and Raycast."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "numpy>=1.26",
   "pillow>=10.0",
   "psutil>=6.0",
   "sqlite-vec>=0.1.9",
@@ -13,9 +12,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ml = [
-  "moondream>=0.0.6",
   "open-clip-torch>=2.26",
-  "sentence-transformers>=3.0",
 ]
 heic = [
   "pillow-heif>=0.16",

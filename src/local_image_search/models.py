@@ -21,10 +21,7 @@ class IndexedImage:
     file_size: int
     created_at: float | None
     modified_at: float
-    caption: str
-    caption_model: str
     embedding_model: str
-    embedding: list[float]
     thumbnail_path: Path | None
 
 

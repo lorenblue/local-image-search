@@ -6,32 +6,19 @@ from pathlib import Path
 from local_image_search.clip import ClipEmbedder
 from local_image_search.db import (
     connect_readonly,
-    count_clip_searchable_images,
     count_images,
     count_searchable_images,
-    search_clip_images,
     search_indexed_images,
 )
-from local_image_search.embeddings import Embedder
 from local_image_search.metrics import memory_status
 
 
 class SearchService:
-    def __init__(
-        self,
-        db_path: Path,
-        embedder: Embedder,
-        clip_embedder: ClipEmbedder | None = None,
-    ) -> None:
+    def __init__(self, db_path: Path, clip_embedder: ClipEmbedder) -> None:
         self.db_path = db_path
-        self.embedder = embedder
         self.clip_embedder = clip_embedder
         self.started_at = time.time()
-        if embedder.dimensions != 384:
-            raise ValueError(
-                f"sqlite-vec search expects 384-dimensional embeddings, got {embedder.dimensions}"
-            )
-        if clip_embedder is not None and clip_embedder.dimensions != 512:
+        if clip_embedder.dimensions != 512:
             raise ValueError(
                 "sqlite-vec CLIP search expects "
                 f"512-dimensional embeddings, got {clip_embedder.dimensions}"
@@ -40,49 +27,29 @@ class SearchService:
     def status(self) -> dict:
         with connect_readonly(self.db_path) as conn:
             total = count_images(conn)
-            searchable = count_searchable_images(conn, self.embedder.name)
-            clip_searchable = (
-                count_clip_searchable_images(conn, self.clip_embedder.name)
-                if self.clip_embedder
-                else 0
-            )
+            searchable = count_searchable_images(conn, self.clip_embedder.name)
         return {
             "database": str(self.db_path),
-            "embedder": self.embedder.name,
-            "clipEmbedder": self.clip_embedder.name if self.clip_embedder else None,
+            "clipEmbedder": self.clip_embedder.name,
             "indexedImages": total,
             "memory": memory_status(),
             "searchableImages": searchable,
-            "clipSearchableImages": clip_searchable,
             "uptimeSeconds": round(time.time() - self.started_at, 3),
         }
 
-    def search(self, query: str, limit: int, mode: str) -> dict:
+    def search(self, query: str, limit: int) -> dict:
         started = time.perf_counter()
         with connect_readonly(self.db_path) as conn:
-            if mode == "caption":
-                results = search_indexed_images(
-                    conn,
-                    self.embedder.embed(query),
-                    self.embedder.name,
-                    limit,
-                )
-            elif mode == "clip":
-                if self.clip_embedder is None:
-                    raise ValueError("CLIP search is not enabled on this server")
-                results = search_clip_images(
-                    conn,
-                    self.clip_embedder.embed_text(query),
-                    self.clip_embedder.name,
-                    limit,
-                )
-            else:
-                raise ValueError(f"Unknown search mode: {mode}")
+            results = search_indexed_images(
+                conn,
+                self.clip_embedder.embed_text(query),
+                self.clip_embedder.name,
+                limit,
+            )
         elapsed_ms = (time.perf_counter() - started) * 1000
         return {
             "query": query,
             "limit": limit,
-            "mode": mode,
             "elapsedMs": round(elapsed_ms, 3),
             "results": [
                 {
@@ -90,8 +57,6 @@ class SearchService:
                     "path": str(result.image.path),
                     "fileName": result.image.file_name,
                     "score": round(result.score, 6),
-                    "caption": result.image.caption,
-                    "captionModel": result.image.caption_model,
                     "embeddingModel": result.image.embedding_model,
                     "thumbnailPath": (
                         str(result.image.thumbnail_path)
@@ -104,18 +69,14 @@ class SearchService:
         }
 
 
-def create_app(
-    db_path: Path,
-    embedder: Embedder,
-    clip_embedder: ClipEmbedder | None = None,
-):
+def create_app(db_path: Path, clip_embedder: ClipEmbedder):
     try:
-        from fastapi import FastAPI, HTTPException, Query
+        from fastapi import FastAPI, Query
         from scalar_fastapi import get_scalar_api_reference
     except ImportError as exc:
         raise RuntimeError("FastAPI server requires: python -m pip install -e '.[api]'") from exc
 
-    service = SearchService(db_path, embedder, clip_embedder)
+    service = SearchService(db_path, clip_embedder)
     app = FastAPI(title="Local Image Search API")
 
     @app.get("/scalar", include_in_schema=False)
@@ -138,12 +99,8 @@ def create_app(
     def search(
         q: str = Query(min_length=1),
         limit: int = Query(default=10, ge=1, le=100),
-        mode: str = Query(default="caption", pattern="^(caption|clip)$"),
     ) -> dict:
-        try:
-            return service.search(q.strip(), limit, mode)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return service.search(q.strip(), limit)
 
     app.state.search_service = service
     return app
@@ -151,8 +108,7 @@ def create_app(
 
 def run_server(
     db_path: Path,
-    embedder: Embedder,
-    clip_embedder: ClipEmbedder | None,
+    clip_embedder: ClipEmbedder,
     host: str,
     port: int,
 ) -> None:
@@ -161,9 +117,7 @@ def run_server(
     except ImportError as exc:
         raise RuntimeError("FastAPI server requires: python -m pip install -e '.[api]'") from exc
 
-    app = create_app(db_path, embedder, clip_embedder)
+    app = create_app(db_path, clip_embedder)
     print(f"serving search API on http://{host}:{port}")
-    print(f"using sqlite-vec search with {embedder.name}")
-    if clip_embedder:
-        print(f"using CLIP search with {clip_embedder.name}")
+    print(f"using CLIP search with {clip_embedder.name}")
     uvicorn.run(app, host=host, port=port)
