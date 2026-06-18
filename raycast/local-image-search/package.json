@@ -22,6 +22,24 @@
       "type": "textfield",
       "required": true,
       "default": "http://127.0.0.1:8765"
+    },
+    {
+      "name": "searchMode",
+      "title": "Search Mode",
+      "description": "Search captions or direct CLIP image embeddings",
+      "type": "dropdown",
+      "required": true,
+      "default": "caption",
+      "data": [
+        {
+          "title": "Caption",
+          "value": "caption"
+        },
+        {
+          "title": "CLIP",
+          "value": "clip"
+        }
+      ]
     }
   ],
   "scripts": {

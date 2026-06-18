@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from "react";
 
 type Preferences = {
   apiBaseUrl: string;
+  searchMode: "caption" | "clip";
 };
 
 type SearchResult = {
@@ -28,6 +29,7 @@ type SearchResult = {
 type SearchResponse = {
   query: string;
   limit: number;
+  mode: "caption" | "clip";
   elapsedMs: number;
   results: SearchResult[];
 };
@@ -35,8 +37,10 @@ type SearchResponse = {
 type StatusResponse = {
   database: string;
   embedder: string;
+  clipEmbedder: string | null;
   indexedImages: number;
   searchableImages: number;
+  clipSearchableImages: number;
   memory: {
     currentMb: number;
     peakMb: number;
@@ -49,6 +53,7 @@ const DEFAULT_LIMIT = 30;
 export default function Command() {
   const preferences = getPreferenceValues<Preferences>();
   const apiBaseUrl = normalizeBaseUrl(preferences.apiBaseUrl);
+  const searchMode = preferences.searchMode;
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -100,6 +105,7 @@ export default function Command() {
         const url = new URL(`${apiBaseUrl}/search`);
         url.searchParams.set("q", trimmedQuery);
         url.searchParams.set("limit", String(DEFAULT_LIMIT));
+        url.searchParams.set("mode", searchMode);
         const response = await fetchJson<SearchResponse>(
           url.toString(),
           controller.signal,
@@ -120,14 +126,18 @@ export default function Command() {
       clearTimeout(timeout);
       controller.abort();
     };
-  }, [apiBaseUrl, query]);
+  }, [apiBaseUrl, query, searchMode]);
 
   const searchBarPlaceholder = useMemo(() => {
     if (status) {
-      return `Search ${status.searchableImages} indexed images`;
+      const count =
+        searchMode === "clip"
+          ? status.clipSearchableImages
+          : status.searchableImages;
+      return `Search ${count} indexed images`;
     }
     return "Search indexed images";
-  }, [status]);
+  }, [searchMode, status]);
 
   if (error) {
     return <ServerError apiBaseUrl={apiBaseUrl} message={error} />;
@@ -145,7 +155,11 @@ export default function Command() {
       throttle
     >
       {!query.trim() && status ? (
-        <StatusItem status={status} apiBaseUrl={apiBaseUrl} />
+        <StatusItem
+          status={status}
+          apiBaseUrl={apiBaseUrl}
+          searchMode={searchMode}
+        />
       ) : null}
       {results.map((result) => (
         <ResultItem key={result.id} result={result} />
@@ -157,14 +171,21 @@ export default function Command() {
 function StatusItem({
   status,
   apiBaseUrl,
+  searchMode,
 }: {
   status: StatusResponse;
   apiBaseUrl: string;
+  searchMode: "caption" | "clip";
 }) {
+  const searchableImages =
+    searchMode === "clip"
+      ? status.clipSearchableImages
+      : status.searchableImages;
+
   return (
     <Grid.Item
       title="Local Image Search"
-      subtitle={`${status.searchableImages} searchable images · ${status.memory.currentMb.toFixed(0)} MB`}
+      subtitle={`${searchableImages} searchable images · ${status.memory.currentMb.toFixed(0)} MB`}
       content={{ source: Icon.MagnifyingGlass }}
       actions={
         <ActionPanel>

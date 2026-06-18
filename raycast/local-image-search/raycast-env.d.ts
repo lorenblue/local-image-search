@@ -9,7 +9,9 @@
 
 type ExtensionPreferences = {
   /** API Base URL - Local Image Search API base URL */
-  "apiBaseUrl": string
+  "apiBaseUrl": string,
+  /** Search Mode - Search captions or direct CLIP image embeddings */
+  "searchMode": "caption" | "clip"
 }
 
 /** Preferences accessible in all the extension's commands */

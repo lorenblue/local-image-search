@@ -7,19 +7,25 @@ import time
 from pathlib import Path
 
 from local_image_search.captioning import make_captioner
+from local_image_search.clip import make_clip_embedder
 from local_image_search.config import DEFAULT_DB_PATH
 from local_image_search.db import (
     connect,
     count_images,
     delete_missing_paths,
+    ensure_clip_vector_table,
     ensure_vector_table,
     get_image_id,
     get_thumbnail_path,
     init_db,
+    needs_clip_indexing,
     needs_indexing,
+    search_clip_images,
     search_indexed_images,
     update_thumbnail_path,
+    upsert_clip_image_embedding,
     upsert_image_embedding,
+    upsert_image_metadata,
     upsert_indexed_image,
 )
 from local_image_search.embeddings import make_embedder
@@ -71,13 +77,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     index_parser.set_defaults(handler=handle_index)
 
-    search_parser = subparsers.add_parser("search", help="Search indexed captions")
+    clip_index_parser = subparsers.add_parser("index-clip", help="Index images for CLIP search")
+    clip_index_parser.add_argument("roots", nargs="+", type=Path, help="Image files or folders")
+    clip_index_parser.add_argument(
+        "--clip-embedder",
+        default="stub",
+        choices=["stub", "open-clip", "openclip", "clip"],
+    )
+    clip_index_parser.add_argument(
+        "--delete-missing",
+        action="store_true",
+        help="Remove database records that were not seen during this scan",
+    )
+    clip_index_parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=1,
+        help="Print indexing progress every N processed images",
+    )
+    clip_index_parser.set_defaults(handler=handle_index_clip)
+
+    search_parser = subparsers.add_parser("search", help="Search indexed images")
     search_parser.add_argument("query", help="Natural language search query")
     search_parser.add_argument("--limit", type=int, default=10)
+    search_parser.add_argument("--mode", default="caption", choices=["caption", "clip"])
     search_parser.add_argument(
         "--embedder",
         default="stub",
         choices=["stub", "sentence-transformers", "sentence-transformer", "st"],
+    )
+    search_parser.add_argument(
+        "--clip-embedder",
+        default="stub",
+        choices=["stub", "open-clip", "openclip", "clip"],
     )
     search_parser.set_defaults(handler=handle_search)
 
@@ -88,6 +120,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--embedder",
         default="stub",
         choices=["stub", "sentence-transformers", "sentence-transformer", "st"],
+    )
+    serve_parser.add_argument(
+        "--clip-embedder",
+        default=None,
+        choices=["stub", "open-clip", "openclip", "clip"],
+        help="Enable CLIP search mode with this local image/text embedder",
     )
     serve_parser.set_defaults(handler=handle_serve)
 
@@ -183,6 +221,69 @@ def handle_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_index_clip(args: argparse.Namespace) -> int:
+    clip_embedder = make_clip_embedder(args.clip_embedder)
+    images = scan_images(args.roots)
+    total = len(images)
+    started = time.perf_counter()
+
+    print(f"found {total} supported images")
+    print(f"clip embedder: {clip_embedder.name}")
+    print(format_memory_status())
+
+    with connect(args.db) as conn:
+        init_db(conn)
+        ensure_clip_vector_table(conn)
+        indexed = 0
+        skipped = 0
+        processed = 0
+        for image in images:
+            processed += 1
+            if not needs_clip_indexing(conn, image, clip_embedder.name):
+                skipped += 1
+                _ensure_stored_thumbnail(conn, image.path)
+                conn.commit()
+                _print_index_progress(
+                    processed=processed,
+                    total=total,
+                    indexed=indexed,
+                    skipped=skipped,
+                    started=started,
+                    file_name=image.file_name,
+                    progress_every=args.progress_every,
+                )
+                continue
+            embedding = clip_embedder.embed_image(image.path)
+            thumbnail_path = ensure_thumbnail(image.path)
+            upsert_image_metadata(conn, image, thumbnail_path)
+            image_id = get_image_id(conn, image.path)
+            upsert_clip_image_embedding(conn, image_id, clip_embedder.name, embedding)
+            indexed += 1
+            conn.commit()
+            _print_index_progress(
+                processed=processed,
+                total=total,
+                indexed=indexed,
+                skipped=skipped,
+                started=started,
+                file_name=image.file_name,
+                progress_every=args.progress_every,
+            )
+        deleted = (
+            delete_missing_paths(conn, [image.path for image in images])
+            if args.delete_missing
+            else 0
+        )
+        conn.commit()
+
+    print(f"scanned: {len(images)}")
+    print(f"clip indexed: {indexed}")
+    print(f"skipped unchanged: {skipped}")
+    if args.delete_missing:
+        print(f"deleted missing: {deleted}")
+    return 0
+
+
 def _ensure_stored_thumbnail(conn: sqlite3.Connection, image_path: Path) -> None:
     existing = get_thumbnail_path(conn, image_path)
     if existing is not None and existing.exists():
@@ -228,17 +329,31 @@ def _format_elapsed(seconds: float) -> str:
 
 
 def handle_search(args: argparse.Namespace) -> int:
-    embedder = make_embedder(args.embedder)
+    embedder = make_embedder(args.embedder) if args.mode == "caption" else None
+    clip_embedder = make_clip_embedder(args.clip_embedder) if args.mode == "clip" else None
     with connect(args.db) as conn:
         init_db(conn)
-        ensure_vector_table(conn)
+        if args.mode == "caption":
+            ensure_vector_table(conn)
+        else:
+            ensure_clip_vector_table(conn)
         conn.commit()
-        results = search_indexed_images(
-            conn,
-            embedder.embed(args.query),
-            embedder.name,
-            args.limit,
-        )
+        if args.mode == "caption":
+            assert embedder is not None
+            results = search_indexed_images(
+                conn,
+                embedder.embed(args.query),
+                embedder.name,
+                args.limit,
+            )
+        else:
+            assert clip_embedder is not None
+            results = search_clip_images(
+                conn,
+                clip_embedder.embed_text(args.query),
+                clip_embedder.name,
+                args.limit,
+            )
     if not results:
         print("no results")
         return 0
@@ -251,9 +366,10 @@ def handle_search(args: argparse.Namespace) -> int:
 
 def handle_serve(args: argparse.Namespace) -> int:
     embedder = make_embedder(args.embedder)
+    clip_embedder = make_clip_embedder(args.clip_embedder) if args.clip_embedder else None
     from local_image_search.server import run_server
 
-    run_server(args.db, embedder, args.host, args.port)
+    run_server(args.db, embedder, clip_embedder, args.host, args.port)
     return 0
 
 

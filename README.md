@@ -59,12 +59,20 @@ image-search index ~/Pictures/TestPhotos --captioner moondream --embedder senten
 image-search search "selfie in mirror" --embedder sentence-transformers
 ```
 
+CLIP mode searches direct image embeddings instead of generated captions:
+
+```bash
+image-search index-clip ~/Pictures/TestPhotos --clip-embedder open-clip
+image-search search "red sports car" --mode clip --clip-embedder open-clip
+```
+
 Run a warm local search API:
 
 ```bash
 python -m pip install -e ".[api]"
-image-search serve --embedder sentence-transformers
+image-search serve --embedder sentence-transformers --clip-embedder open-clip
 curl "http://127.0.0.1:8765/search?q=selfie%20in%20mirror&limit=5"
+curl "http://127.0.0.1:8765/search?q=red%20sports%20car&mode=clip&limit=5"
 ```
 
 Open the local API reference at:
@@ -108,13 +116,13 @@ src/local_image_search/
   db.py             SQLite schema and repositories
   scanner.py        recursive folder scanning
   captioning.py     captioner interface and implementations
+  clip.py           CLIP image/text embedder implementations
   embeddings.py     embedder interface and implementations
   search.py         cosine similarity ranking
 ```
 
 ## Next
 
-1. Test Moondream caption quality on real photos.
-2. Compare Florence-2 if Moondream captions are too generic.
-3. Add a local API.
-4. Add a Raycast extension.
+1. Compare caption search and CLIP search on real photos.
+2. Tune the caption prompt if captions miss important search terms.
+3. Try hybrid ranking if caption and CLIP results complement each other.
