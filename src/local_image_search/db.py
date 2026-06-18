@@ -165,10 +165,12 @@ def search_indexed_images(
     query_embedding: list[float],
     embedding_model: str,
     limit: int,
+    exclude_path: Path | None = None,
 ) -> list[SearchResult]:
     _validate_embedding_dimensions(query_embedding)
     if not vector_table_exists(conn):
         return []
+    search_limit = limit + 1 if exclude_path else limit
     rows = conn.execute(
         f"""
         SELECT images.id, images.path, images.file_name, images.file_size,
@@ -183,15 +185,23 @@ def search_indexed_images(
           AND images.embedding_model = ?
         ORDER BY matches.distance
         """,
-        (serialize_embedding(query_embedding), limit, embedding_model),
+        (serialize_embedding(query_embedding), search_limit, embedding_model),
     ).fetchall()
-    return [
-        SearchResult(
-            image=_row_to_indexed_image(row),
-            score=float(row["score"]),
+    excluded = _normalize_search_path(exclude_path)
+    results = []
+    for row in rows:
+        image = _row_to_indexed_image(row)
+        if excluded is not None and _normalize_search_path(image.path) == excluded:
+            continue
+        results.append(
+            SearchResult(
+                image=image,
+                score=float(row["score"]),
+            )
         )
-        for row in rows
-    ]
+        if len(results) >= limit:
+            break
+    return results
 
 
 def delete_missing_paths(conn: sqlite3.Connection, seen_paths: Iterable[Path]) -> int:
@@ -317,6 +327,12 @@ def _normalize_thumbnail_path(value: str | None) -> Path | None:
     if not value:
         return None
     return Path(value).expanduser().resolve()
+
+
+def _normalize_search_path(value: Path | None) -> Path | None:
+    if value is None:
+        return None
+    return value.expanduser().resolve()
 
 
 def _validate_embedding_dimensions(embedding: list[float]) -> None:

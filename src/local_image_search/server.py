@@ -11,6 +11,7 @@ from local_image_search.db import (
     search_indexed_images,
 )
 from local_image_search.metrics import memory_status
+from local_image_search.models import SearchResult
 
 
 class SearchService:
@@ -51,27 +52,35 @@ class SearchService:
             "query": query,
             "limit": limit,
             "elapsedMs": round(elapsed_ms, 3),
-            "results": [
-                {
-                    "id": result.image.id,
-                    "path": str(result.image.path),
-                    "fileName": result.image.file_name,
-                    "score": round(result.score, 6),
-                    "embeddingModel": result.image.embedding_model,
-                    "thumbnailPath": (
-                        str(result.image.thumbnail_path)
-                        if result.image.thumbnail_path
-                        else None
-                    ),
-                }
-                for result in results
-            ],
+            "results": _serialize_results(results),
+        }
+
+    def similar(self, image_path: Path, limit: int) -> dict:
+        image_path = image_path.expanduser().resolve()
+        if not image_path.exists():
+            raise FileNotFoundError(f"Image does not exist: {image_path}")
+
+        started = time.perf_counter()
+        with connect_readonly(self.db_path) as conn:
+            results = search_indexed_images(
+                conn,
+                self.clip_embedder.embed_image(image_path),
+                self.clip_embedder.name,
+                limit,
+                exclude_path=image_path,
+            )
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        return {
+            "path": str(image_path),
+            "limit": limit,
+            "elapsedMs": round(elapsed_ms, 3),
+            "results": _serialize_results(results),
         }
 
 
 def create_app(db_path: Path, clip_embedder: ClipEmbedder):
     try:
-        from fastapi import FastAPI, Query
+        from fastapi import FastAPI, HTTPException, Query
         from scalar_fastapi import get_scalar_api_reference
     except ImportError as exc:
         raise RuntimeError("FastAPI server requires: python -m pip install -e '.[api]'") from exc
@@ -102,6 +111,16 @@ def create_app(db_path: Path, clip_embedder: ClipEmbedder):
     ) -> dict:
         return service.search(q.strip(), limit)
 
+    @app.get("/similar")
+    def similar(
+        path: str = Query(min_length=1),
+        limit: int = Query(default=10, ge=1, le=100),
+    ) -> dict:
+        try:
+            return service.similar(Path(path), limit)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     app.state.search_service = service
     return app
 
@@ -121,3 +140,19 @@ def run_server(
     print(f"serving search API on http://{host}:{port}")
     print(f"using CLIP search with {clip_embedder.name}")
     uvicorn.run(app, host=host, port=port)
+
+
+def _serialize_results(results: list[SearchResult]) -> list[dict]:
+    return [
+        {
+            "id": result.image.id,
+            "path": str(result.image.path),
+            "fileName": result.image.file_name,
+            "score": round(result.score, 6),
+            "embeddingModel": result.image.embedding_model,
+            "thumbnailPath": (
+                str(result.image.thumbnail_path) if result.image.thumbnail_path else None
+            ),
+        }
+        for result in results
+    ]

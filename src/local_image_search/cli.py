@@ -77,6 +77,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search_parser.set_defaults(handler=handle_search)
 
+    similar_parser = subparsers.add_parser(
+        "similar",
+        help="Find indexed images visually similar to a local image",
+    )
+    similar_parser.add_argument("image", type=Path, help="Reference image path")
+    similar_parser.add_argument("--limit", type=int, default=10)
+    similar_parser.add_argument(
+        "--clip-embedder",
+        default="open-clip",
+        choices=["stub", "open-clip", "openclip", "clip"],
+    )
+    similar_parser.set_defaults(handler=handle_similar)
+
     serve_parser = subparsers.add_parser("serve", help="Run the local search API")
     serve_parser.add_argument("--host", default="127.0.0.1")
     serve_parser.add_argument("--port", type=int, default=8765)
@@ -228,6 +241,32 @@ def handle_search(args: argparse.Namespace) -> int:
             clip_embedder.embed_text(args.query),
             clip_embedder.name,
             args.limit,
+        )
+    if not results:
+        print("no results")
+        return 0
+
+    for result in results:
+        print(f"{result.score:.3f}  {result.image.path}")
+    return 0
+
+
+def handle_similar(args: argparse.Namespace) -> int:
+    image_path = args.image.expanduser().resolve()
+    if not image_path.exists():
+        raise FileNotFoundError(f"Image does not exist: {image_path}")
+
+    clip_embedder = make_clip_embedder(args.clip_embedder)
+    with connect(args.db) as conn:
+        init_db(conn)
+        ensure_vector_table(conn)
+        conn.commit()
+        results = search_indexed_images(
+            conn,
+            clip_embedder.embed_image(image_path),
+            clip_embedder.name,
+            args.limit,
+            exclude_path=image_path,
         )
     if not results:
         print("no results")

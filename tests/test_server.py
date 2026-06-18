@@ -46,6 +46,71 @@ def test_api_search_returns_ranked_clip_results(tmp_path: Path) -> None:
     assert body["results"][0]["thumbnailPath"] == str(tmp_path / "thumb.jpg")
 
 
+def test_api_similar_returns_ranked_results_and_excludes_source(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    clip_embedder = StubClipEmbedder()
+    source_path = tmp_path / "red-sports-car.jpg"
+    similar_path = tmp_path / "red-sports-truck.jpg"
+    other_path = tmp_path / "beach-sunset.jpg"
+    for path in [source_path, similar_path, other_path]:
+        path.write_bytes(b"test image placeholder")
+
+    images = [
+        ImageFile(
+            path=source_path,
+            file_name=source_path.name,
+            file_size=10,
+            created_at=None,
+            modified_at=1,
+        ),
+        ImageFile(
+            path=similar_path,
+            file_name=similar_path.name,
+            file_size=10,
+            created_at=None,
+            modified_at=1,
+        ),
+        ImageFile(
+            path=other_path,
+            file_name=other_path.name,
+            file_size=10,
+            created_at=None,
+            modified_at=1,
+        ),
+    ]
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        for image in images:
+            _insert_indexed_image(conn, image, clip_embedder, thumbnail_path=None)
+        conn.commit()
+
+    client = TestClient(create_app(db_path, clip_embedder))
+
+    response = client.get("/similar", params={"path": str(source_path), "limit": 2})
+
+    assert response.status_code == 200
+    body = response.json()
+    result_names = [result["fileName"] for result in body["results"]]
+    assert body["path"] == str(source_path.resolve())
+    assert source_path.name not in result_names
+    assert result_names[0] == similar_path.name
+
+
+def test_api_similar_returns_404_for_missing_reference_image(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    clip_embedder = StubClipEmbedder()
+    with connect(db_path) as conn:
+        init_db(conn)
+        conn.commit()
+
+    client = TestClient(create_app(db_path, clip_embedder))
+
+    response = client.get("/similar", params={"path": str(tmp_path / "missing.jpg")})
+
+    assert response.status_code == 404
+
+
 def test_memory_status_reports_current_and_peak_memory() -> None:
     memory = memory_status()
 

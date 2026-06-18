@@ -30,6 +30,13 @@ type SearchResponse = {
   results: SearchResult[];
 };
 
+type SimilarResponse = {
+  path: string;
+  limit: number;
+  elapsedMs: number;
+  results: SearchResult[];
+};
+
 type StatusResponse = {
   database: string;
   clipEmbedder: string;
@@ -146,7 +153,7 @@ export default function Command() {
         <StatusItem status={status} apiBaseUrl={apiBaseUrl} />
       ) : null}
       {results.map((result) => (
-        <ResultItem key={result.id} result={result} />
+        <ResultItem key={result.id} result={result} apiBaseUrl={apiBaseUrl} />
       ))}
     </Grid>
   );
@@ -176,7 +183,13 @@ function StatusItem({
   );
 }
 
-function ResultItem({ result }: { result: SearchResult }) {
+function ResultItem({
+  result,
+  apiBaseUrl,
+}: {
+  result: SearchResult;
+  apiBaseUrl: string;
+}) {
   const content = result.thumbnailPath
     ? { source: result.thumbnailPath }
     : { source: Icon.Image, tintColor: Color.SecondaryText };
@@ -208,7 +221,14 @@ function ResultItem({ result }: { result: SearchResult }) {
             <Action.Push
               title="Show Details"
               icon={Icon.Text}
-              target={<ResultDetail result={result} />}
+              target={<ResultDetail result={result} apiBaseUrl={apiBaseUrl} />}
+            />
+            <Action.Push
+              title="Find Similar Images"
+              icon={Icon.BullsEye}
+              target={
+                <SimilarImages source={result} apiBaseUrl={apiBaseUrl} />
+              }
             />
             <Action.CopyToClipboard title="Copy Path" content={result.path} />
           </ActionPanel.Section>
@@ -218,7 +238,13 @@ function ResultItem({ result }: { result: SearchResult }) {
   );
 }
 
-function ResultDetail({ result }: { result: SearchResult }) {
+function ResultDetail({
+  result,
+  apiBaseUrl,
+}: {
+  result: SearchResult;
+  apiBaseUrl: string;
+}) {
   const markdown = [
     result.thumbnailPath
       ? `![${escapeMarkdown(result.fileName)}](${result.thumbnailPath})`
@@ -258,12 +284,80 @@ function ResultDetail({ result }: { result: SearchResult }) {
             icon={Icon.Image}
             onAction={() => open(result.path)}
           />
+          <Action.Push
+            title="Find Similar Images"
+            icon={Icon.BullsEye}
+            target={<SimilarImages source={result} apiBaseUrl={apiBaseUrl} />}
+          />
           <Action.ToggleQuickLook />
           <Action.ShowInFinder path={result.path} />
           <Action.CopyToClipboard title="Copy Path" content={result.path} />
         </ActionPanel>
       }
     />
+  );
+}
+
+function SimilarImages({
+  source,
+  apiBaseUrl,
+}: {
+  source: SearchResult;
+  apiBaseUrl: string;
+}) {
+  const [results, setResults] = useState<SearchResult[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadSimilarImages() {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const url = new URL(`${apiBaseUrl}/similar`);
+        url.searchParams.set("path", source.path);
+        url.searchParams.set("limit", String(DEFAULT_LIMIT));
+        const response = await fetchJson<SimilarResponse>(
+          url.toString(),
+          controller.signal,
+        );
+        setResults(response.results);
+      } catch (unknownError) {
+        if (!controller.signal.aborted) {
+          setError(errorMessage(unknownError));
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    loadSimilarImages();
+    return () => {
+      controller.abort();
+    };
+  }, [apiBaseUrl, source.path]);
+
+  if (error) {
+    return <ServerError apiBaseUrl={apiBaseUrl} message={error} />;
+  }
+
+  return (
+    <Grid
+      columns={5}
+      fit={Grid.Fit.Fill}
+      inset={Grid.Inset.Small}
+      isLoading={isLoading}
+      navigationTitle="Similar Images"
+      searchBarPlaceholder={source.fileName}
+    >
+      {results.map((result) => (
+        <ResultItem key={result.id} result={result} apiBaseUrl={apiBaseUrl} />
+      ))}
+    </Grid>
   );
 }
 
