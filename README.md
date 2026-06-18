@@ -29,7 +29,7 @@ Images should stay on the machine. Model downloads may require network access du
 ## Setup
 
 ```bash
-cd /Users/lorenzo/Projects/local-image-search
+cd path/to/local-image-search
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
@@ -71,6 +71,14 @@ Open the local API reference at:
 
 ```text
 http://127.0.0.1:8765/scalar
+```
+
+Run the Raycast extension:
+
+```bash
+cd raycast/local-image-search
+npm install
+npm run dev
 ```
 
 To override the Moondream model:

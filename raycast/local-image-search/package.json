@@ -1,0 +1,41 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "local-image-search",
+  "title": "Local Image Search",
+  "description": "Search local images with a local semantic image search API.",
+  "icon": "icon.png",
+  "author": "lorenzo",
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "search-images",
+      "title": "Search Images",
+      "description": "Search indexed local images",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "apiBaseUrl",
+      "title": "API Base URL",
+      "description": "Local Image Search API base URL",
+      "type": "textfield",
+      "required": true,
+      "default": "http://127.0.0.1:8765"
+    }
+  ],
+  "scripts": {
+    "dev": "ray develop",
+    "build": "ray build",
+    "lint": "ray lint",
+    "fix-lint": "ray lint --fix"
+  },
+  "dependencies": {
+    "@raycast/api": "^1.94.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2"
+  }
+}
