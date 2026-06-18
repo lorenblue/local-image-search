@@ -55,11 +55,6 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["stub", "open-clip", "openclip", "clip"],
     )
     index_parser.add_argument(
-        "--delete-missing",
-        action="store_true",
-        help="Remove database records that were not seen during this scan",
-    )
-    index_parser.add_argument(
         "--progress-every",
         type=int,
         default=1,
@@ -171,18 +166,13 @@ def handle_index(args: argparse.Namespace) -> int:
                 file_name=image.file_name,
                 progress_every=args.progress_every,
             )
-        deleted = (
-            delete_missing_paths(conn, [image.path for image in images])
-            if args.delete_missing
-            else 0
-        )
+        deleted = delete_missing_paths(conn, [image.path for image in images], args.roots)
         conn.commit()
 
     print(f"scanned: {len(images)}")
     print(f"indexed: {indexed}")
     print(f"skipped unchanged: {skipped}")
-    if args.delete_missing:
-        print(f"deleted missing: {deleted}")
+    print(f"deleted missing: {deleted}")
     return 0
 
 

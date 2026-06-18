@@ -10,6 +10,7 @@ from local_image_search.models import ImageFile, IndexedImage, SearchResult
 SQLITE_TIMEOUT_SECONDS = 30
 VECTOR_TABLE_NAME = "image_embeddings"
 VECTOR_DIMENSIONS = 512
+SEARCH_OVERFETCH_MULTIPLIER = 5
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -168,9 +169,13 @@ def search_indexed_images(
     exclude_path: Path | None = None,
 ) -> list[SearchResult]:
     _validate_embedding_dimensions(query_embedding)
+    if limit <= 0:
+        return []
     if not vector_table_exists(conn):
         return []
-    search_limit = limit + 1 if exclude_path else limit
+    search_limit = limit * SEARCH_OVERFETCH_MULTIPLIER
+    if exclude_path:
+        search_limit += 1
     rows = conn.execute(
         f"""
         SELECT images.id, images.path, images.file_name, images.file_size,
@@ -193,6 +198,8 @@ def search_indexed_images(
         image = _row_to_indexed_image(row)
         if excluded is not None and _normalize_search_path(image.path) == excluded:
             continue
+        if not image.path.exists():
+            continue
         results.append(
             SearchResult(
                 image=image,
@@ -204,19 +211,29 @@ def search_indexed_images(
     return results
 
 
-def delete_missing_paths(conn: sqlite3.Connection, seen_paths: Iterable[Path]) -> int:
-    seen = {str(path) for path in seen_paths}
+def delete_missing_paths(
+    conn: sqlite3.Connection,
+    seen_paths: Iterable[Path],
+    roots: Iterable[Path],
+) -> int:
+    seen = {_normalize_stored_path(path) for path in seen_paths}
+    scopes = [_scan_scope(root) for root in roots]
+    if not scopes:
+        return 0
+
     rows = conn.execute("SELECT id, path FROM images").fetchall()
     deleted = 0
     for row in rows:
-        if row["path"] not in seen:
-            if vector_table_exists(conn):
-                conn.execute(
-                    f"DELETE FROM {VECTOR_TABLE_NAME} WHERE rowid = ?",
-                    (row["id"],),
-                )
-            conn.execute("DELETE FROM images WHERE id = ?", (row["id"],))
-            deleted += 1
+        image_path = _normalize_stored_path(Path(row["path"]))
+        if image_path in seen or not _path_is_in_scan_scope(image_path, scopes):
+            continue
+        if vector_table_exists(conn):
+            conn.execute(
+                f"DELETE FROM {VECTOR_TABLE_NAME} WHERE rowid = ?",
+                (row["id"],),
+            )
+        conn.execute("DELETE FROM images WHERE id = ?", (row["id"],))
+        deleted += 1
     return deleted
 
 
@@ -333,6 +350,26 @@ def _normalize_search_path(value: Path | None) -> Path | None:
     if value is None:
         return None
     return value.expanduser().resolve()
+
+
+def _normalize_stored_path(value: Path) -> Path:
+    return value.expanduser().resolve(strict=False)
+
+
+def _scan_scope(root: Path) -> tuple[Path, bool]:
+    normalized = root.expanduser().resolve(strict=False)
+    return normalized, root.is_file()
+
+
+def _path_is_in_scan_scope(path: Path, scopes: list[tuple[Path, bool]]) -> bool:
+    for root, exact_match in scopes:
+        if exact_match:
+            if path == root:
+                return True
+            continue
+        if path == root or path.is_relative_to(root):
+            return True
+    return False
 
 
 def _validate_embedding_dimensions(embedding: list[float]) -> None:

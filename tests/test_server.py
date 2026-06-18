@@ -15,8 +15,10 @@ from local_image_search.server import create_app
 def test_api_search_returns_ranked_clip_results(tmp_path: Path) -> None:
     db_path = tmp_path / "images.db"
     clip_embedder = StubClipEmbedder()
+    image_path = tmp_path / "red-sports-car.jpg"
+    image_path.write_bytes(b"test image placeholder")
     image = ImageFile(
-        path=tmp_path / "red-sports-car.jpg",
+        path=image_path,
         file_name="red-sports-car.jpg",
         file_size=10,
         created_at=None,
@@ -45,6 +47,45 @@ def test_api_search_returns_ranked_clip_results(tmp_path: Path) -> None:
     body = response.json()
     assert body["results"][0]["fileName"] == "red-sports-car.jpg"
     assert body["results"][0]["thumbnailPath"] == str(tmp_path / "thumb.jpg")
+
+
+def test_api_search_skips_deleted_index_entries(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    clip_embedder = StubClipEmbedder()
+    live_path = tmp_path / "red-sports-truck.jpg"
+    missing_path = tmp_path / "red-sports-car.jpg"
+    live_path.write_bytes(b"test image placeholder")
+
+    images = [
+        ImageFile(
+            path=missing_path,
+            file_name=missing_path.name,
+            file_size=10,
+            created_at=None,
+            modified_at=1,
+        ),
+        ImageFile(
+            path=live_path,
+            file_name=live_path.name,
+            file_size=10,
+            created_at=None,
+            modified_at=1,
+        ),
+    ]
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        for image in images:
+            _insert_indexed_image(conn, image, clip_embedder, thumbnail_path=None)
+        conn.commit()
+
+    client = TestClient(create_app(db_path, clip_embedder))
+
+    response = client.get("/search", params={"q": "red sports car", "limit": 1})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [result["fileName"] for result in body["results"]] == [live_path.name]
 
 
 def test_api_similar_returns_ranked_results_and_excludes_source(tmp_path: Path) -> None:
@@ -136,6 +177,7 @@ def test_search_service_finds_newly_committed_vectors(tmp_path: Path) -> None:
         created_at=None,
         modified_at=1,
     )
+    image.path.write_bytes(b"test image placeholder")
     with connect(db_path) as conn:
         ensure_vector_table(conn)
         _insert_indexed_image(conn, image, clip_embedder, thumbnail_path=None)
