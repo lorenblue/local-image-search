@@ -7,6 +7,7 @@ import {
   Icon,
   getPreferenceValues,
   open,
+  popToRoot,
 } from "@raycast/api";
 import { useEffect, useMemo, useState } from "react";
 
@@ -55,6 +56,7 @@ export default function Command() {
   const preferences = getPreferenceValues<Preferences>();
   const apiBaseUrl = normalizeBaseUrl(preferences.apiBaseUrl);
   const [query, setQuery] = useState("");
+  const [similarSource, setSimilarSource] = useState<SearchResult | null>(null);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -92,7 +94,7 @@ export default function Command() {
 
   useEffect(() => {
     const trimmedQuery = query.trim();
-    if (!trimmedQuery) {
+    if (!trimmedQuery && !similarSource) {
       setResults([]);
       return;
     }
@@ -102,10 +104,16 @@ export default function Command() {
       setIsLoading(true);
       setError(null);
       try {
-        const url = new URL(`${apiBaseUrl}/search`);
-        url.searchParams.set("q", trimmedQuery);
+        const url = new URL(
+          trimmedQuery ? `${apiBaseUrl}/search` : `${apiBaseUrl}/similar`,
+        );
+        if (trimmedQuery) {
+          url.searchParams.set("q", trimmedQuery);
+        } else if (similarSource) {
+          url.searchParams.set("path", similarSource.path);
+        }
         url.searchParams.set("limit", String(DEFAULT_LIMIT));
-        const response = await fetchJson<SearchResponse>(
+        const response = await fetchJson<SearchResponse | SimilarResponse>(
           url.toString(),
           controller.signal,
         );
@@ -125,17 +133,27 @@ export default function Command() {
       clearTimeout(timeout);
       controller.abort();
     };
-  }, [apiBaseUrl, query]);
+  }, [apiBaseUrl, query, similarSource]);
 
   const searchBarPlaceholder = useMemo(() => {
+    if (similarSource) {
+      return `Similar to ${similarSource.fileName}`;
+    }
     if (status) {
       return `Search ${status.searchableImages} indexed images`;
     }
     return "Search indexed images";
-  }, [status]);
+  }, [similarSource, status]);
 
   if (error) {
     return <ServerError apiBaseUrl={apiBaseUrl} message={error} />;
+  }
+
+  function handleSearchTextChange(text: string) {
+    setQuery(text);
+    if (text.trim()) {
+      setSimilarSource(null);
+    }
   }
 
   return (
@@ -144,16 +162,26 @@ export default function Command() {
       fit={Grid.Fit.Fill}
       inset={Grid.Inset.Small}
       isLoading={isLoading}
-      navigationTitle="Search Images"
-      onSearchTextChange={setQuery}
+      navigationTitle={
+        query.trim() || !similarSource ? "Search Images" : "Similar Images"
+      }
+      onSearchTextChange={handleSearchTextChange}
       searchBarPlaceholder={searchBarPlaceholder}
+      searchText={query}
       throttle
     >
-      {!query.trim() && status ? (
+      {!query.trim() && !similarSource && status ? (
         <StatusItem status={status} apiBaseUrl={apiBaseUrl} />
       ) : null}
       {results.map((result) => (
-        <ResultItem key={result.id} result={result} apiBaseUrl={apiBaseUrl} />
+        <ResultItem
+          key={result.id}
+          result={result}
+          onFindSimilar={() => {
+            setSimilarSource(result);
+            setQuery("");
+          }}
+        />
       ))}
     </Grid>
   );
@@ -185,10 +213,10 @@ function StatusItem({
 
 function ResultItem({
   result,
-  apiBaseUrl,
+  onFindSimilar,
 }: {
   result: SearchResult;
-  apiBaseUrl: string;
+  onFindSimilar: () => void;
 }) {
   const content = result.thumbnailPath
     ? { source: result.thumbnailPath }
@@ -221,14 +249,17 @@ function ResultItem({
             <Action.Push
               title="Show Details"
               icon={Icon.Text}
-              target={<ResultDetail result={result} apiBaseUrl={apiBaseUrl} />}
+              target={
+                <ResultDetail
+                  result={result}
+                  onFindSimilar={onFindSimilar}
+                />
+              }
             />
-            <Action.Push
+            <Action
               title="Find Similar Images"
               icon={Icon.BullsEye}
-              target={
-                <SimilarImages source={result} apiBaseUrl={apiBaseUrl} />
-              }
+              onAction={onFindSimilar}
             />
             <Action.CopyToClipboard title="Copy Path" content={result.path} />
           </ActionPanel.Section>
@@ -240,10 +271,10 @@ function ResultItem({
 
 function ResultDetail({
   result,
-  apiBaseUrl,
+  onFindSimilar,
 }: {
   result: SearchResult;
-  apiBaseUrl: string;
+  onFindSimilar: () => void;
 }) {
   const markdown = [
     result.thumbnailPath
@@ -284,10 +315,13 @@ function ResultDetail({
             icon={Icon.Image}
             onAction={() => open(result.path)}
           />
-          <Action.Push
+          <Action
             title="Find Similar Images"
             icon={Icon.BullsEye}
-            target={<SimilarImages source={result} apiBaseUrl={apiBaseUrl} />}
+            onAction={async () => {
+              onFindSimilar();
+              await popToRoot();
+            }}
           />
           <Action.ToggleQuickLook />
           <Action.ShowInFinder path={result.path} />
@@ -295,69 +329,6 @@ function ResultDetail({
         </ActionPanel>
       }
     />
-  );
-}
-
-function SimilarImages({
-  source,
-  apiBaseUrl,
-}: {
-  source: SearchResult;
-  apiBaseUrl: string;
-}) {
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const controller = new AbortController();
-
-    async function loadSimilarImages() {
-      setIsLoading(true);
-      setError(null);
-      try {
-        const url = new URL(`${apiBaseUrl}/similar`);
-        url.searchParams.set("path", source.path);
-        url.searchParams.set("limit", String(DEFAULT_LIMIT));
-        const response = await fetchJson<SimilarResponse>(
-          url.toString(),
-          controller.signal,
-        );
-        setResults(response.results);
-      } catch (unknownError) {
-        if (!controller.signal.aborted) {
-          setError(errorMessage(unknownError));
-        }
-      } finally {
-        if (!controller.signal.aborted) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    loadSimilarImages();
-    return () => {
-      controller.abort();
-    };
-  }, [apiBaseUrl, source.path]);
-
-  if (error) {
-    return <ServerError apiBaseUrl={apiBaseUrl} message={error} />;
-  }
-
-  return (
-    <Grid
-      columns={5}
-      fit={Grid.Fit.Fill}
-      inset={Grid.Inset.Small}
-      isLoading={isLoading}
-      navigationTitle="Similar Images"
-      searchBarPlaceholder={source.fileName}
-    >
-      {results.map((result) => (
-        <ResultItem key={result.id} result={result} apiBaseUrl={apiBaseUrl} />
-      ))}
-    </Grid>
   );
 }
 
