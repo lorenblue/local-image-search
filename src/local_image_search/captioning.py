@@ -33,6 +33,11 @@ class StubCaptioner(Captioner):
 
 class MoondreamCaptioner(Captioner):
     default_model = "moondream2"
+    search_caption_prompt = (
+        "Describe this image for semantic photo search. Include people, clothing, "
+        "visible text, signs, logos, objects, vehicles, actions, location, colors, "
+        "and scene context. Be literal and specific."
+    )
 
     def __init__(self) -> None:
         try:
@@ -72,8 +77,11 @@ class MoondreamCaptioner(Captioner):
 
     def caption(self, image_path: Path) -> str:
         image = self._image_class.open(image_path)
-        result = self._model.caption(image, length="long")
-        caption = result.get("caption") if isinstance(result, dict) else str(result)
+        result = self._model.query(image=image, question=self.search_caption_prompt)
+        caption = result.get("answer") if isinstance(result, dict) else str(result)
+        if not caption:
+            result = self._model.caption(image, length="long")
+            caption = result.get("caption") if isinstance(result, dict) else str(result)
         if not caption:
             raise RuntimeError(f"Moondream returned an empty caption for {image_path}")
         return str(caption)
