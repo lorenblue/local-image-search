@@ -11,8 +11,11 @@ import {
 } from "@raycast/api";
 import { useEffect, useMemo, useState } from "react";
 
+import { ensureServerRunning } from "./server";
+
 type Preferences = {
   apiBaseUrl: string;
+  projectDirectory: string;
 };
 
 type SearchResult = {
@@ -70,9 +73,8 @@ export default function Command() {
       setIsLoading(true);
       setError(null);
       try {
-        const response = await fetchJson<StatusResponse>(
-          `${apiBaseUrl}/status`,
-        );
+        await ensureServerRunning(apiBaseUrl, preferences.projectDirectory);
+        const response = await fetchJson<StatusResponse>(`${apiBaseUrl}/status`);
         if (!cancelled) {
           setStatus(response);
         }
@@ -91,7 +93,7 @@ export default function Command() {
     return () => {
       cancelled = true;
     };
-  }, [apiBaseUrl]);
+  }, [apiBaseUrl, preferences.projectDirectory]);
 
   useEffect(() => {
     const trimmedQuery = query.trim();
@@ -351,7 +353,7 @@ function ServerError({
     "",
     `Could not reach \`${apiBaseUrl}\`.`,
     "",
-    "Start the local API server:",
+    "Start the local API server manually, or check the Raycast Project Directory preference:",
     "",
     "```bash",
     "cd path/to/local-image-search",

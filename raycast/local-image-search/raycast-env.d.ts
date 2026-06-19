@@ -9,7 +9,9 @@
 
 type ExtensionPreferences = {
   /** API Base URL - Local Image Search API base URL */
-  "apiBaseUrl": string
+  "apiBaseUrl": string,
+  /** Project Directory - Local Image Search project directory */
+  "projectDirectory": string
 }
 
 /** Preferences accessible in all the extension's commands */

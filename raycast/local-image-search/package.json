@@ -22,6 +22,14 @@
       "type": "textfield",
       "required": true,
       "default": "http://127.0.0.1:8765"
+    },
+    {
+      "name": "projectDirectory",
+      "title": "Project Directory",
+      "description": "Local Image Search project directory",
+      "type": "textfield",
+      "required": true,
+      "default": "~/Projects/local-image-search"
     }
   ],
   "scripts": {
