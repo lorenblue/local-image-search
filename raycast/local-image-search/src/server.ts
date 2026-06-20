@@ -17,7 +17,7 @@ export async function ensureServerRunning(
   }
 
   if (!serverStartPromise) {
-    const command = buildServerCommand(projectDirectory);
+    const command = buildServerCommand(projectDirectory, apiBaseUrl);
     serverStartPromise = startServer(command, statusUrl).finally(() => {
       serverStartPromise = null;
     });
@@ -26,11 +26,12 @@ export async function ensureServerRunning(
   await serverStartPromise;
 }
 
-function buildServerCommand(projectDirectory: string): string {
+function buildServerCommand(projectDirectory: string, apiBaseUrl: string): string {
   const projectDir = expandHome(projectDirectory);
   const executablePath = join(projectDir, ".venv", "bin", "image-search");
   const dbPath = join(projectDir, "data", "images.db");
   const logPath = join(projectDir, "data", "logs", "server.log");
+  const { host, port } = apiAddress(apiBaseUrl);
 
   return [
     "mkdir",
@@ -41,6 +42,10 @@ function buildServerCommand(projectDirectory: string): string {
     "--db",
     shellQuote(dbPath),
     "serve",
+    "--host",
+    shellQuote(host),
+    "--port",
+    shellQuote(port),
     ">>",
     shellQuote(logPath),
     "2>&1",
@@ -100,4 +105,11 @@ function sleep(milliseconds: number): Promise<void> {
 
 function normalizeBaseUrl(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function apiAddress(apiBaseUrl: string): { host: string; port: string } {
+  const url = new URL(normalizeBaseUrl(apiBaseUrl));
+  const port =
+    url.port || (url.protocol === "https:" ? "443" : "80");
+  return { host: url.hostname, port };
 }

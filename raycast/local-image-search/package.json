@@ -21,7 +21,7 @@
       "description": "Local Image Search API base URL",
       "type": "textfield",
       "required": true,
-      "default": "http://127.0.0.1:8765"
+      "default": "http://127.0.0.1:8766"
     },
     {
       "name": "projectDirectory",

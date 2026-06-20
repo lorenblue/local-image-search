@@ -24,6 +24,8 @@ from local_image_search.scanner import scan_images
 from local_image_search.search_service import SearchService
 from local_image_search.thumbnails import ensure_thumbnail
 
+DEFAULT_API_PORT = 8766
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
@@ -87,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve_parser = subparsers.add_parser("serve", help="Run the local search API")
     serve_parser.add_argument("--host", default="127.0.0.1")
-    serve_parser.add_argument("--port", type=int, default=8765)
+    serve_parser.add_argument("--port", type=int, default=DEFAULT_API_PORT)
     serve_parser.add_argument(
         "--clip-embedder",
         default="open-clip",

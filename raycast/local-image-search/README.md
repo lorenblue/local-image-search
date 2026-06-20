@@ -9,7 +9,7 @@ Start the backend first:
 ```bash
 cd path/to/local-image-search
 source .venv/bin/activate
-image-search serve
+image-search serve --port 8766
 ```
 
 Then run the extension:
