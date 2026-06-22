@@ -26,7 +26,10 @@ export async function ensureServerRunning(
   await serverStartPromise;
 }
 
-function buildServerCommand(projectDirectory: string, apiBaseUrl: string): string {
+function buildServerCommand(
+  projectDirectory: string,
+  apiBaseUrl: string,
+): string {
   const projectDir = expandHome(projectDirectory);
   const executablePath = join(projectDir, ".venv", "bin", "image-search");
   const dbPath = join(projectDir, "data", "images.db");
@@ -109,7 +112,6 @@ function normalizeBaseUrl(value: string): string {
 
 function apiAddress(apiBaseUrl: string): { host: string; port: string } {
   const url = new URL(normalizeBaseUrl(apiBaseUrl));
-  const port =
-    url.port || (url.protocol === "https:" ? "443" : "80");
+  const port = url.port || (url.protocol === "https:" ? "443" : "80");
   return { host: url.hostname, port };
 }

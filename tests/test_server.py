@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from local_image_search.clip import StubClipEmbedder
 from local_image_search.db import connect, ensure_vector_table, init_db, upsert_indexed_image
@@ -40,6 +42,7 @@ def test_api_search_returns_ranked_clip_results(tmp_path: Path) -> None:
     assert status["memory"]["currentMb"] > 0
     assert status["memory"]["peakMb"] > 0
     assert client.get("/scalar").status_code == 200
+    assert status["indexing"]["running"] is False
 
     response = client.get("/search", params={"q": "red sports car", "limit": 1})
 
@@ -47,6 +50,36 @@ def test_api_search_returns_ranked_clip_results(tmp_path: Path) -> None:
     body = response.json()
     assert body["results"][0]["fileName"] == "red-sports-car.jpg"
     assert body["results"][0]["thumbnailPath"] == str(tmp_path / "thumb.jpg")
+
+
+def test_api_status_handles_missing_database(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path / "missing.db", StubClipEmbedder()))
+
+    status = client.get("/status").json()
+
+    assert status["indexedImages"] == 0
+    assert status["searchableImages"] == 0
+    assert status["indexing"]["running"] is False
+
+
+def test_api_sync_indexes_folder_in_background(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    image_path = tmp_path / "new-red-car.jpg"
+    Image.new("RGB", (16, 16), "red").save(image_path)
+    client = TestClient(create_app(db_path, StubClipEmbedder()))
+
+    response = client.post("/sync", json={"roots": [str(tmp_path)]})
+
+    assert response.status_code == 200
+    status = _wait_for_indexing_to_finish(client)
+    assert status["indexing"]["error"] is None
+    assert status["searchableImages"] == 1
+
+    search = client.get("/search", params={"q": "red car", "limit": 1}).json()
+    assert search["results"][0]["fileName"] == image_path.name
+    assert search["results"][0]["thumbnailPath"].startswith(
+        str(tmp_path / "thumbnails")
+    )
 
 
 def test_api_search_skips_deleted_index_entries(tmp_path: Path) -> None:
@@ -203,3 +236,13 @@ def _insert_indexed_image(
         clip_embedder.embed_image(image.path),
         thumbnail_path=thumbnail_path,
     )
+
+
+def _wait_for_indexing_to_finish(client: TestClient) -> dict:
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        status = client.get("/status").json()
+        if not status["indexing"]["running"]:
+            return status
+        time.sleep(0.01)
+    raise AssertionError("indexing did not finish")

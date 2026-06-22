@@ -16,6 +16,7 @@ import { ensureServerRunning } from "./server";
 type Preferences = {
   apiBaseUrl: string;
   projectDirectory: string;
+  indexedFolders?: string;
 };
 
 type SearchResult = {
@@ -46,6 +47,7 @@ type StatusResponse = {
   clipEmbedder: string;
   indexedImages: number;
   searchableImages: number;
+  indexing: IndexingStatus;
   memory: {
     currentMb: number;
     peakMb: number;
@@ -53,7 +55,22 @@ type StatusResponse = {
   uptimeSeconds: number;
 };
 
+type IndexingStatus = {
+  roots: string[];
+  running: boolean;
+  total: number;
+  processed: number;
+  indexed: number;
+  skipped: number;
+  deleted: number;
+  lastFile: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  error: string | null;
+};
+
 const DEFAULT_LIMIT = 30;
+const STATUS_POLL_MS = 2000;
 
 export default function Command() {
   const preferences = getPreferenceValues<Preferences>();
@@ -74,7 +91,13 @@ export default function Command() {
       setError(null);
       try {
         await ensureServerRunning(apiBaseUrl, preferences.projectDirectory);
-        const response = await fetchJson<StatusResponse>(`${apiBaseUrl}/status`);
+        const indexedFolders = parseIndexedFolders(preferences.indexedFolders);
+        if (indexedFolders.length > 0) {
+          await postJson(`${apiBaseUrl}/sync`, { roots: indexedFolders });
+        }
+        const response = await fetchJson<StatusResponse>(
+          `${apiBaseUrl}/status`,
+        );
         if (!cancelled) {
           setStatus(response);
         }
@@ -93,7 +116,34 @@ export default function Command() {
     return () => {
       cancelled = true;
     };
-  }, [apiBaseUrl, preferences.projectDirectory]);
+  }, [apiBaseUrl, preferences.projectDirectory, preferences.indexedFolders]);
+
+  useEffect(() => {
+    if (!status?.indexing.running) {
+      return;
+    }
+
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetchJson<StatusResponse>(
+          `${apiBaseUrl}/status`,
+        );
+        if (!cancelled) {
+          setStatus(response);
+        }
+      } catch (unknownError) {
+        if (!cancelled) {
+          setError(errorMessage(unknownError));
+        }
+      }
+    }, STATUS_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [apiBaseUrl, status?.indexing.running]);
 
   useEffect(() => {
     const trimmedQuery = query.trim();
@@ -201,11 +251,16 @@ function StatusItem({
   status: StatusResponse;
   apiBaseUrl: string;
 }) {
+  const indexingLabel = status.indexing.running
+    ? ` · indexing ${status.indexing.processed}/${status.indexing.total}`
+    : "";
+  const errorLabel = status.indexing.error ? " · indexing error" : "";
+
   return (
     <Grid.Item
       id="status"
       title="Local Image Search"
-      subtitle={`${status.searchableImages} searchable images · ${status.memory.currentMb.toFixed(0)} MB`}
+      subtitle={`${status.searchableImages} searchable images${indexingLabel}${errorLabel} · ${status.memory.currentMb.toFixed(0)} MB`}
       content={{ source: Icon.MagnifyingGlass }}
       actions={
         <ActionPanel>
@@ -259,10 +314,7 @@ function ResultItem({
               title="Show Details"
               icon={Icon.Text}
               target={
-                <ResultDetail
-                  result={result}
-                  onFindSimilar={onFindSimilar}
-                />
+                <ResultDetail result={result} onFindSimilar={onFindSimilar} />
               }
             />
             <Action
@@ -376,6 +428,21 @@ async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function postJson<T>(url: string, body: unknown): Promise<T> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const responseBody = await response.text();
+    throw new Error(
+      `${response.status} ${response.statusText}: ${responseBody}`,
+    );
+  }
+  return (await response.json()) as T;
+}
+
 function normalizeBaseUrl(value: string): string {
   return value.replace(/\/+$/, "");
 }
@@ -386,6 +453,16 @@ function scoreLabel(score: number): string {
 
 function resultItemId(result: SearchResult | undefined): string | undefined {
   return result ? String(result.id) : undefined;
+}
+
+function parseIndexedFolders(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+  return value
+    .split(/[,\n]/)
+    .map((folder) => folder.trim())
+    .filter(Boolean);
 }
 
 function errorMessage(error: unknown): string {

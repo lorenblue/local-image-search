@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from local_image_search.clip import ClipEmbedder
+from local_image_search.index_service import BackgroundIndexService
 from local_image_search.search_service import SearchService
 
 
@@ -14,6 +15,7 @@ def create_app(db_path: Path, clip_embedder: ClipEmbedder):
         raise RuntimeError("FastAPI server requires: python -m pip install -e '.[api]'") from exc
 
     service = SearchService(db_path, clip_embedder)
+    indexer = BackgroundIndexService(db_path, clip_embedder)
     app = FastAPI(title="Local Image Search API")
 
     @app.get("/scalar", include_in_schema=False)
@@ -30,7 +32,17 @@ def create_app(db_path: Path, clip_embedder: ClipEmbedder):
 
     @app.get("/status")
     def status() -> dict:
-        return service.status()
+        response = service.status()
+        response["indexing"] = indexer.status()
+        return response
+
+    @app.post("/sync")
+    def sync(payload: dict) -> dict:
+        try:
+            roots = _sync_roots(payload)
+            return {"indexing": indexer.start(Path(root) for root in roots)}
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/search")
     def search(
@@ -50,7 +62,17 @@ def create_app(db_path: Path, clip_embedder: ClipEmbedder):
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     app.state.search_service = service
+    app.state.index_service = indexer
     return app
+
+
+def _sync_roots(payload: dict) -> list[str]:
+    roots = payload.get("roots")
+    if not isinstance(roots, list) or not roots:
+        raise ValueError("At least one folder is required")
+    if not all(isinstance(root, str) and root.strip() for root in roots):
+        raise ValueError("Sync roots must be non-empty strings")
+    return [root.strip() for root in roots]
 
 
 def run_server(

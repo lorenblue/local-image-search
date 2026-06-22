@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 
@@ -26,9 +27,13 @@ class SearchService:
             )
 
     def status(self) -> dict:
-        with connect_readonly(self.db_path) as conn:
-            total = count_images(conn)
-            searchable = count_searchable_images(conn, self.clip_embedder.name)
+        try:
+            with connect_readonly(self.db_path) as conn:
+                total = count_images(conn)
+                searchable = count_searchable_images(conn, self.clip_embedder.name)
+        except (FileNotFoundError, sqlite3.OperationalError):
+            total = 0
+            searchable = 0
         return {
             "database": str(self.db_path),
             "clipEmbedder": self.clip_embedder.name,

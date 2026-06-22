@@ -30,6 +30,14 @@
       "type": "textfield",
       "required": true,
       "default": "~/Projects/local-image-search"
+    },
+    {
+      "name": "indexedFolders",
+      "title": "Indexed Folders",
+      "description": "Folders to sync when the extension opens. Separate multiple folders with commas.",
+      "type": "textfield",
+      "required": false,
+      "default": ""
     }
   ],
   "scripts": {

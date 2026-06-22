@@ -8,21 +8,10 @@ from pathlib import Path
 
 from local_image_search.clip import make_clip_embedder
 from local_image_search.config import DEFAULT_DB_PATH
-from local_image_search.db import (
-    connect,
-    count_images,
-    delete_missing_paths,
-    ensure_vector_table,
-    get_thumbnail_path,
-    init_db,
-    needs_indexing,
-    update_thumbnail_path,
-    upsert_indexed_image,
-)
+from local_image_search.db import connect, count_images, init_db
+from local_image_search.index_service import IndexProgress, index_roots
 from local_image_search.metrics import format_memory_status
-from local_image_search.scanner import scan_images
 from local_image_search.search_service import SearchService
-from local_image_search.thumbnails import ensure_thumbnail
 
 DEFAULT_API_PORT = 8766
 
@@ -118,99 +107,50 @@ def handle_status(args: argparse.Namespace) -> int:
 
 def handle_index(args: argparse.Namespace) -> int:
     clip_embedder = make_clip_embedder(args.clip_embedder)
-    images = scan_images(args.roots)
-    total = len(images)
     started = time.perf_counter()
 
-    print(f"found {total} supported images")
     print(f"clip embedder: {clip_embedder.name}")
     print(format_memory_status())
 
-    with connect(args.db) as conn:
-        init_db(conn)
-        ensure_vector_table(conn)
-        indexed = 0
-        skipped = 0
-        processed = 0
-        for image in images:
-            processed += 1
-            if not needs_indexing(conn, image, clip_embedder.name):
-                skipped += 1
-                _ensure_stored_thumbnail(conn, image.path)
-                conn.commit()
-                _print_index_progress(
-                    processed=processed,
-                    total=total,
-                    indexed=indexed,
-                    skipped=skipped,
-                    started=started,
-                    file_name=image.file_name,
-                    progress_every=args.progress_every,
-                )
-                continue
-            embedding = clip_embedder.embed_image(image.path)
-            thumbnail_path = ensure_thumbnail(image.path)
-            upsert_indexed_image(
-                conn,
-                image,
-                clip_embedder.name,
-                embedding,
-                thumbnail_path,
-            )
-            indexed += 1
-            conn.commit()
-            _print_index_progress(
-                processed=processed,
-                total=total,
-                indexed=indexed,
-                skipped=skipped,
-                started=started,
-                file_name=image.file_name,
-                progress_every=args.progress_every,
-            )
-        deleted = delete_missing_paths(conn, [image.path for image in images], args.roots)
-        conn.commit()
+    result = index_roots(
+        args.db,
+        args.roots,
+        clip_embedder,
+        on_progress=lambda progress: _print_index_progress(
+            progress,
+            started=started,
+            progress_every=args.progress_every,
+        ),
+    )
 
-    print(f"scanned: {len(images)}")
-    print(f"indexed: {indexed}")
-    print(f"skipped unchanged: {skipped}")
-    print(f"deleted missing: {deleted}")
+    print(f"scanned: {result.total}")
+    print(f"indexed: {result.indexed}")
+    print(f"skipped unchanged: {result.skipped}")
+    print(f"deleted missing: {result.deleted}")
     return 0
 
 
-def _ensure_stored_thumbnail(conn: sqlite3.Connection, image_path: Path) -> None:
-    existing = get_thumbnail_path(conn, image_path)
-    if existing is not None and existing.exists():
-        return
-    thumbnail_path = ensure_thumbnail(image_path)
-    if thumbnail_path is None:
-        return
-    update_thumbnail_path(conn, image_path, thumbnail_path)
-
-
 def _print_index_progress(
+    progress: IndexProgress,
     *,
-    processed: int,
-    total: int,
-    indexed: int,
-    skipped: int,
     started: float,
-    file_name: str,
     progress_every: int,
 ) -> None:
     if progress_every <= 0:
         return
-    if processed != total and processed % progress_every != 0:
+    if progress.total == 0:
+        return
+    if progress.processed != progress.total and progress.processed % progress_every != 0:
         return
 
     elapsed = time.perf_counter() - started
-    percent = (processed / total * 100) if total else 100.0
+    percent = (progress.processed / progress.total * 100) if progress.total else 100.0
     print(
-        f"[{processed}/{total} {percent:5.1f}%] "
-        f"indexed={indexed} skipped={skipped} "
+        f"[{progress.processed}/{progress.total} {percent:5.1f}%] "
+        f"indexed={progress.indexed} skipped={progress.skipped} "
         f"elapsed={_format_elapsed(elapsed)} "
         f"{format_memory_status()} "
-        f"last={file_name}"
+        f"last={progress.last_file}"
     )
 
 

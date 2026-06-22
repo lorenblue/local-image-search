@@ -61,23 +61,37 @@ source .venv/bin/activate
 python -m pip install -e ".[ml,heic,api]"
 ```
 
-## CLI
+## Raycast
 
-Index a folder:
+Run the Raycast extension:
 
 ```bash
-image-search init
-image-search index ~/Pictures/TestPhotos
+cd raycast/local-image-search
+npm install
+npm run dev
 ```
 
-Search from the terminal:
+In Raycast preferences, set `Indexed Folders` to the folders you want searched,
+for example:
+
+```text
+~/Pictures/TestPhotos
+```
+
+When the command opens, it starts the local API if needed and syncs those
+folders in the background. Search still works while indexing is running.
+
+## CLI
+
+The CLI is still useful for manual indexing and debugging:
 
 ```bash
+image-search index ~/Pictures/TestPhotos
 image-search search "red sports car"
 image-search search "person wearing glasses" --limit 20
 ```
 
-Run the local search API:
+Run the local search API manually:
 
 ```bash
 image-search serve
@@ -88,14 +102,6 @@ Open the local API reference at:
 
 ```text
 http://127.0.0.1:8766/scalar
-```
-
-Run the Raycast extension:
-
-```bash
-cd raycast/local-image-search
-npm install
-npm run dev
 ```
 
 ## Configuration

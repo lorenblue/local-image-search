@@ -11,7 +11,9 @@ type ExtensionPreferences = {
   /** API Base URL - Local Image Search API base URL */
   "apiBaseUrl": string,
   /** Project Directory - Local Image Search project directory */
-  "projectDirectory": string
+  "projectDirectory": string,
+  /** Indexed Folders - Folders to sync when the extension opens. Separate multiple folders with commas. */
+  "indexedFolders": string
 }
 
 /** Preferences accessible in all the extension's commands */
