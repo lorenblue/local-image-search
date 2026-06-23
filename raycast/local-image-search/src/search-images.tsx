@@ -7,7 +7,6 @@ import {
   Icon,
   getPreferenceValues,
   open,
-  popToRoot,
 } from "@raycast/api";
 import { useEffect, useMemo, useState } from "react";
 
@@ -310,13 +309,6 @@ function ResultItem({
             <Action.ShowInFinder path={result.path} />
           </ActionPanel.Section>
           <ActionPanel.Section>
-            <Action.Push
-              title="Show Details"
-              icon={Icon.Text}
-              target={
-                <ResultDetail result={result} onFindSimilar={onFindSimilar} />
-              }
-            />
             <Action
               title="Find Similar Images"
               icon={Icon.BullsEye}
@@ -324,69 +316,6 @@ function ResultItem({
             />
             <Action.CopyToClipboard title="Copy Path" content={result.path} />
           </ActionPanel.Section>
-        </ActionPanel>
-      }
-    />
-  );
-}
-
-function ResultDetail({
-  result,
-  onFindSimilar,
-}: {
-  result: SearchResult;
-  onFindSimilar: () => void;
-}) {
-  const markdown = [
-    result.thumbnailPath
-      ? `![${escapeMarkdown(result.fileName)}](${result.thumbnailPath})`
-      : "",
-    `# ${escapeMarkdown(result.fileName)}`,
-    "",
-    `**Score:** ${scoreLabel(result.score)}`,
-    "",
-    `**Path:** \`${result.path}\``,
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  return (
-    <Detail
-      markdown={markdown}
-      metadata={
-        <Detail.Metadata>
-          <Detail.Metadata.Label title="File" text={result.fileName} />
-          <Detail.Metadata.Label
-            title="Score"
-            text={scoreLabel(result.score)}
-          />
-          <Detail.Metadata.Label title="Path" text={result.path} />
-        </Detail.Metadata>
-      }
-      actions={
-        <ActionPanel>
-          <Action.Paste title="Paste Image" content={{ file: result.path }} />
-          <Action.CopyToClipboard
-            title="Copy Image"
-            content={{ file: result.path }}
-            shortcut={{ modifiers: ["cmd"], key: "enter" }}
-          />
-          <Action
-            title="Open Image"
-            icon={Icon.Image}
-            onAction={() => open(result.path)}
-          />
-          <Action
-            title="Find Similar Images"
-            icon={Icon.BullsEye}
-            onAction={async () => {
-              onFindSimilar();
-              await popToRoot();
-            }}
-          />
-          <Action.ToggleQuickLook />
-          <Action.ShowInFinder path={result.path} />
-          <Action.CopyToClipboard title="Copy Path" content={result.path} />
         </ActionPanel>
       }
     />
@@ -470,8 +399,4 @@ function errorMessage(error: unknown): string {
     return error.message;
   }
   return String(error);
-}
-
-function escapeMarkdown(value: string): string {
-  return value.replace(/([\\`*_{}[\]()#+\-.!])/g, "\\$1");
 }
