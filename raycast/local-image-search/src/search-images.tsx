@@ -210,6 +210,14 @@ export default function Command() {
     }
   }
 
+  function handleResultTrashed(path: string) {
+    setResults((currentResults) => {
+      const nextResults = currentResults.filter((result) => result.path !== path);
+      setSelectedItemId(resultItemId(nextResults[0]));
+      return nextResults;
+    });
+  }
+
   return (
     <Grid
       columns={5}
@@ -237,6 +245,7 @@ export default function Command() {
             setSimilarSource(result);
             setQuery("");
           }}
+          onTrash={() => handleResultTrashed(result.path)}
         />
       ))}
     </Grid>
@@ -276,9 +285,11 @@ function StatusItem({
 function ResultItem({
   result,
   onFindSimilar,
+  onTrash,
 }: {
   result: SearchResult;
   onFindSimilar: () => void;
+  onTrash: () => void;
 }) {
   const content = result.thumbnailPath
     ? { source: result.thumbnailPath }
@@ -307,6 +318,7 @@ function ResultItem({
             />
             <Action.ToggleQuickLook />
             <Action.ShowInFinder path={result.path} />
+            <Action.Trash paths={result.path} onTrash={onTrash} />
           </ActionPanel.Section>
           <ActionPanel.Section>
             <Action
