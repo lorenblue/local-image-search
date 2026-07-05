@@ -17,6 +17,10 @@ ml = [
 heic = [
   "pillow-heif>=0.16",
 ]
+face = [
+  "insightface>=1.0",
+  "onnxruntime>=1.20",
+]
 api = [
   "fastapi>=0.115",
   "scalar-fastapi>=1.8",

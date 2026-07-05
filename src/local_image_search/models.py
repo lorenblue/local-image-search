@@ -29,3 +29,12 @@ class IndexedImage:
 class SearchResult:
     image: IndexedImage
     score: float
+
+
+@dataclass(frozen=True)
+class FaceBox:
+    x: float
+    y: float
+    width: float
+    height: float
+    detection_score: float | None
