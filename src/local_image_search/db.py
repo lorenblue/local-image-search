@@ -10,6 +10,8 @@ from local_image_search.models import ImageFile, IndexedImage, SearchResult
 SQLITE_TIMEOUT_SECONDS = 30
 VECTOR_TABLE_NAME = "image_embeddings"
 VECTOR_DIMENSIONS = 512
+FACE_VECTOR_TABLE_NAME = "face_embeddings"
+FACE_VECTOR_DIMENSIONS = 512
 SEARCH_OVERFETCH_MULTIPLIER = 5
 
 
@@ -60,6 +62,29 @@ def init_db(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_images_path ON images(path);
         CREATE INDEX IF NOT EXISTS idx_images_modified_at ON images(modified_at);
+
+        CREATE TABLE IF NOT EXISTS face_clusters (
+            id INTEGER PRIMARY KEY,
+            label TEXT,
+            created_at REAL NOT NULL DEFAULT 0,
+            updated_at REAL NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS faces (
+            id INTEGER PRIMARY KEY,
+            image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+            x REAL NOT NULL,
+            y REAL NOT NULL,
+            width REAL NOT NULL,
+            height REAL NOT NULL,
+            detection_score REAL,
+            embedding_model TEXT NOT NULL DEFAULT '',
+            cluster_id INTEGER REFERENCES face_clusters(id) ON DELETE SET NULL,
+            indexed_at REAL NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_faces_image_id ON faces(image_id);
+        CREATE INDEX IF NOT EXISTS idx_faces_cluster_id ON faces(cluster_id);
         """
     )
     conn.commit()
@@ -70,6 +95,15 @@ def ensure_vector_table(conn: sqlite3.Connection) -> None:
         f"""
         CREATE VIRTUAL TABLE IF NOT EXISTS {VECTOR_TABLE_NAME}
         USING vec0(embedding float[{VECTOR_DIMENSIONS}])
+        """
+    )
+
+
+def ensure_face_vector_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f"""
+        CREATE VIRTUAL TABLE IF NOT EXISTS {FACE_VECTOR_TABLE_NAME}
+        USING vec0(embedding float[{FACE_VECTOR_DIMENSIONS}])
         """
     )
 
@@ -232,9 +266,26 @@ def delete_missing_paths(
                 f"DELETE FROM {VECTOR_TABLE_NAME} WHERE rowid = ?",
                 (row["id"],),
             )
+        delete_faces_for_image(conn, int(row["id"]))
         conn.execute("DELETE FROM images WHERE id = ?", (row["id"],))
         deleted += 1
     return deleted
+
+
+def delete_faces_for_image(conn: sqlite3.Connection, image_id: int) -> None:
+    face_ids = [
+        int(row["id"])
+        for row in conn.execute(
+            "SELECT id FROM faces WHERE image_id = ?",
+            (image_id,),
+        ).fetchall()
+    ]
+    if face_ids and face_vector_table_exists(conn):
+        conn.executemany(
+            f"DELETE FROM {FACE_VECTOR_TABLE_NAME} WHERE rowid = ?",
+            [(face_id,) for face_id in face_ids],
+        )
+    conn.execute("DELETE FROM faces WHERE image_id = ?", (image_id,))
 
 
 def count_images(conn: sqlite3.Connection) -> int:
@@ -305,13 +356,21 @@ def serialize_embedding(embedding: list[float]) -> bytes:
 
 
 def vector_table_exists(conn: sqlite3.Connection) -> bool:
+    return _table_exists(conn, VECTOR_TABLE_NAME)
+
+
+def face_vector_table_exists(conn: sqlite3.Connection) -> bool:
+    return _table_exists(conn, FACE_VECTOR_TABLE_NAME)
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     row = conn.execute(
         """
         SELECT 1
         FROM sqlite_master
         WHERE type = 'table' AND name = ?
         """,
-        (VECTOR_TABLE_NAME,),
+        (table_name,),
     ).fetchone()
     return row is not None
 
