@@ -124,6 +124,17 @@ To override the OpenCLIP model:
 CLIP_MODEL=ViT-B-16 CLIP_PRETRAINED=datacomp_xl_s13b_b90k image-search index ~/Pictures/TestPhotos
 ```
 
+To review face detection quality, install the optional face dependencies and
+generate a local HTML contact sheet:
+
+```bash
+python -m pip install -e ".[face]"
+image-search faces-review ~/Pictures/TestPhotos --limit 50 --output data/faces-review.html
+```
+
+The first run may download the local InsightFace model. After that, face review
+runs offline from the cached model.
+
 ## What This Project Demonstrates
 
 - Designing a local-first AI workflow for private media
@@ -137,4 +148,4 @@ CLIP_MODEL=ViT-B-16 CLIP_PRETRAINED=datacomp_xl_s13b_b90k image-search index ~/P
 1. Compare OpenCLIP models on real photos.
 2. Add OCR as a separate searchable field for text inside images.
 3. Add saved searches or folder presets.
-4. Explore face clustering without identity recognition.
+4. Explore face embeddings and clustering without identity recognition.

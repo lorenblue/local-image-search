@@ -9,6 +9,8 @@ from pathlib import Path
 from local_image_search.clip import make_clip_embedder
 from local_image_search.config import DEFAULT_DB_PATH
 from local_image_search.db import connect, count_images, init_db
+from local_image_search.face_detection import DEFAULT_FACE_DETECTOR, make_face_detector
+from local_image_search.face_review import write_face_review
 from local_image_search.index_service import IndexProgress, index_roots
 from local_image_search.metrics import format_memory_status
 from local_image_search.search_service import SearchService
@@ -21,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.handler(args)
-    except (FileNotFoundError, RuntimeError, ValueError, sqlite3.Error) as exc:
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -85,6 +87,25 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["stub", "open-clip", "openclip", "clip"],
     )
     serve_parser.set_defaults(handler=handle_serve)
+
+    faces_review_parser = subparsers.add_parser(
+        "faces-review",
+        help="Generate an HTML contact sheet for reviewing face detection quality",
+    )
+    faces_review_parser.add_argument("roots", nargs="+", type=Path, help="Image files or folders")
+    faces_review_parser.add_argument(
+        "--face-detector",
+        default=DEFAULT_FACE_DETECTOR,
+        choices=["insightface"],
+    )
+    faces_review_parser.add_argument("--limit", type=int, default=50)
+    faces_review_parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("data/faces-review.html"),
+        help="HTML report path",
+    )
+    faces_review_parser.set_defaults(handler=handle_faces_review)
 
     return parser
 
@@ -189,6 +210,13 @@ def handle_serve(args: argparse.Namespace) -> int:
     from local_image_search.server import run_server
 
     run_server(args.db, clip_embedder, args.host, args.port)
+    return 0
+
+
+def handle_faces_review(args: argparse.Namespace) -> int:
+    detector = make_face_detector(args.face_detector)
+    output_path = write_face_review(args.roots, detector, args.output, args.limit)
+    print(f"wrote {output_path}")
     return 0
 
 
