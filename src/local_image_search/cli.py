@@ -8,7 +8,7 @@ from pathlib import Path
 
 from local_image_search.clip import make_clip_embedder
 from local_image_search.config import DEFAULT_DB_PATH
-from local_image_search.db import connect, count_images, init_db
+from local_image_search.db import connect, count_faces, count_images, init_db
 from local_image_search.face_detection import DEFAULT_FACE_DETECTOR, make_face_detector
 from local_image_search.face_review import write_face_review
 from local_image_search.index_service import IndexProgress, index_roots
@@ -53,6 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Print indexing progress every N processed images",
     )
+    index_parser.add_argument(
+        "--face-detector",
+        default=DEFAULT_FACE_DETECTOR,
+        choices=["insightface"],
+    )
     index_parser.set_defaults(handler=handle_index)
 
     search_parser = subparsers.add_parser("search", help="Search indexed images")
@@ -85,6 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--clip-embedder",
         default="open-clip",
         choices=["stub", "open-clip", "openclip", "clip"],
+    )
+    serve_parser.add_argument(
+        "--face-detector",
+        default=DEFAULT_FACE_DETECTOR,
+        choices=["insightface"],
     )
     serve_parser.set_defaults(handler=handle_serve)
 
@@ -121,22 +131,27 @@ def handle_status(args: argparse.Namespace) -> int:
     with connect(args.db) as conn:
         init_db(conn)
         total = count_images(conn)
+        faces = count_faces(conn)
     print(f"database: {args.db}")
     print(f"indexed images: {total}")
+    print(f"indexed faces: {faces}")
     return 0
 
 
 def handle_index(args: argparse.Namespace) -> int:
     clip_embedder = make_clip_embedder(args.clip_embedder)
+    face_detector = make_face_detector(args.face_detector)
     started = time.perf_counter()
 
     print(f"clip embedder: {clip_embedder.name}")
+    print(f"face detector: {face_detector.name}")
     print(format_memory_status())
 
     result = index_roots(
         args.db,
         args.roots,
         clip_embedder,
+        face_detector=face_detector,
         on_progress=lambda progress: _print_index_progress(
             progress,
             started=started,
@@ -146,6 +161,7 @@ def handle_index(args: argparse.Namespace) -> int:
 
     print(f"scanned: {result.total}")
     print(f"indexed: {result.indexed}")
+    print(f"faces indexed: {result.faces_indexed}")
     print(f"skipped unchanged: {result.skipped}")
     print(f"deleted missing: {result.deleted}")
     return 0
@@ -168,7 +184,8 @@ def _print_index_progress(
     percent = (progress.processed / progress.total * 100) if progress.total else 100.0
     print(
         f"[{progress.processed}/{progress.total} {percent:5.1f}%] "
-        f"indexed={progress.indexed} skipped={progress.skipped} "
+        f"indexed={progress.indexed} faces={progress.faces_indexed} "
+        f"skipped={progress.skipped} "
         f"elapsed={_format_elapsed(elapsed)} "
         f"{format_memory_status()} "
         f"last={progress.last_file}"
@@ -207,9 +224,10 @@ def _print_results(results: list[dict]) -> int:
 
 def handle_serve(args: argparse.Namespace) -> int:
     clip_embedder = make_clip_embedder(args.clip_embedder)
+    face_detector = make_face_detector(args.face_detector)
     from local_image_search.server import run_server
 
-    run_server(args.db, clip_embedder, args.host, args.port)
+    run_server(args.db, clip_embedder, face_detector, args.host, args.port)
     return 0
 
 

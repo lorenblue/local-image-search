@@ -3,11 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from local_image_search.clip import ClipEmbedder
+from local_image_search.face_detection import FaceDetector
 from local_image_search.index_service import BackgroundIndexService
 from local_image_search.search_service import SearchService
 
 
-def create_app(db_path: Path, clip_embedder: ClipEmbedder):
+def create_app(
+    db_path: Path,
+    clip_embedder: ClipEmbedder,
+    face_detector: FaceDetector | None = None,
+):
     try:
         from fastapi import FastAPI, HTTPException, Query
         from scalar_fastapi import get_scalar_api_reference
@@ -15,7 +20,7 @@ def create_app(db_path: Path, clip_embedder: ClipEmbedder):
         raise RuntimeError("FastAPI server requires: python -m pip install -e '.[api]'") from exc
 
     service = SearchService(db_path, clip_embedder)
-    indexer = BackgroundIndexService(db_path, clip_embedder)
+    indexer = BackgroundIndexService(db_path, clip_embedder, face_detector)
     app = FastAPI(title="Local Image Search API")
 
     @app.get("/scalar", include_in_schema=False)
@@ -78,6 +83,7 @@ def _sync_roots(payload: dict) -> list[str]:
 def run_server(
     db_path: Path,
     clip_embedder: ClipEmbedder,
+    face_detector: FaceDetector,
     host: str,
     port: int,
 ) -> None:
@@ -86,7 +92,8 @@ def run_server(
     except ImportError as exc:
         raise RuntimeError("FastAPI server requires: python -m pip install -e '.[api]'") from exc
 
-    app = create_app(db_path, clip_embedder)
+    app = create_app(db_path, clip_embedder, face_detector)
     print(f"serving search API on http://{host}:{port}")
     print(f"using CLIP search with {clip_embedder.name}")
+    print(f"using face detection with {face_detector.name}")
     uvicorn.run(app, host=host, port=port)

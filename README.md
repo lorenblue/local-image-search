@@ -58,7 +58,7 @@ raycast/local-image-search/
 cd path/to/local-image-search
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[ml,heic,api]"
+python -m pip install -e ".[ml,heic,api,face]"
 ```
 
 ## Raycast
@@ -90,6 +90,9 @@ image-search index ~/Pictures/TestPhotos
 image-search search "red sports car"
 image-search search "person wearing glasses" --limit 20
 ```
+
+Indexing stores both CLIP image embeddings and InsightFace face boxes when the
+current file or model metadata is stale.
 
 Run the local search API manually:
 
@@ -124,11 +127,9 @@ To override the OpenCLIP model:
 CLIP_MODEL=ViT-B-16 CLIP_PRETRAINED=datacomp_xl_s13b_b90k image-search index ~/Pictures/TestPhotos
 ```
 
-To review face detection quality, install the optional face dependencies and
-generate a local HTML contact sheet:
+To review face detection quality, generate a local HTML contact sheet:
 
 ```bash
-python -m pip install -e ".[face]"
 image-search faces-review ~/Pictures/TestPhotos --limit 50 --output data/faces-review.html
 ```
 

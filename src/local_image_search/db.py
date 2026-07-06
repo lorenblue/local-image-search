@@ -5,7 +5,7 @@ import time
 from collections.abc import Iterable
 from pathlib import Path
 
-from local_image_search.models import ImageFile, IndexedImage, SearchResult
+from local_image_search.models import FaceBox, ImageFile, IndexedImage, SearchResult
 
 SQLITE_TIMEOUT_SECONDS = 30
 VECTOR_TABLE_NAME = "image_embeddings"
@@ -56,6 +56,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at REAL,
             modified_at REAL NOT NULL,
             embedding_model TEXT NOT NULL DEFAULT '',
+            face_detection_model TEXT NOT NULL DEFAULT '',
+            faces_indexed_at REAL NOT NULL DEFAULT 0,
             thumbnail_path TEXT,
             indexed_at REAL NOT NULL DEFAULT 0
         );
@@ -78,6 +80,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             width REAL NOT NULL,
             height REAL NOT NULL,
             detection_score REAL,
+            detection_model TEXT NOT NULL DEFAULT '',
             embedding_model TEXT NOT NULL DEFAULT '',
             cluster_id INTEGER REFERENCES face_clusters(id) ON DELETE SET NULL,
             indexed_at REAL NOT NULL DEFAULT 0
@@ -86,6 +89,24 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_faces_image_id ON faces(image_id);
         CREATE INDEX IF NOT EXISTS idx_faces_cluster_id ON faces(cluster_id);
         """
+    )
+    _ensure_column(
+        conn,
+        "images",
+        "face_detection_model",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    _ensure_column(
+        conn,
+        "images",
+        "faces_indexed_at",
+        "REAL NOT NULL DEFAULT 0",
+    )
+    _ensure_column(
+        conn,
+        "faces",
+        "detection_model",
+        "TEXT NOT NULL DEFAULT ''",
     )
     conn.commit()
 
@@ -133,13 +154,34 @@ def needs_indexing(
     )
 
 
+def needs_face_indexing(
+    conn: sqlite3.Connection,
+    image_path: Path,
+    detection_model: str,
+) -> bool:
+    row = conn.execute(
+        """
+        SELECT face_detection_model, faces_indexed_at
+        FROM images
+        WHERE path = ?
+        """,
+        (str(image_path),),
+    ).fetchone()
+    if row is None:
+        return True
+    return (
+        row["face_detection_model"] != detection_model
+        or float(row["faces_indexed_at"]) <= 0
+    )
+
+
 def upsert_indexed_image(
     conn: sqlite3.Connection,
     image: ImageFile,
     embedding_model: str,
     embedding: list[float],
     thumbnail_path: Path | None,
-) -> None:
+) -> int:
     _validate_embedding_dimensions(embedding)
     conn.execute(
         """
@@ -183,6 +225,92 @@ def upsert_indexed_image(
         f"INSERT INTO {VECTOR_TABLE_NAME} (rowid, embedding) VALUES (?, ?)",
         (image_id, serialize_embedding(embedding)),
     )
+    reset_faces_for_image(conn, image_id)
+    return image_id
+
+
+def upsert_faces_for_image(
+    conn: sqlite3.Connection,
+    image_id: int,
+    detection_model: str,
+    faces: list[FaceBox],
+) -> None:
+    reset_faces_for_image(conn, image_id)
+    indexed_at = time.time()
+    conn.executemany(
+        """
+        INSERT INTO faces (
+            image_id,
+            x,
+            y,
+            width,
+            height,
+            detection_score,
+            detection_model,
+            indexed_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                image_id,
+                face.x,
+                face.y,
+                face.width,
+                face.height,
+                face.detection_score,
+                detection_model,
+                indexed_at,
+            )
+            for face in faces
+        ],
+    )
+    conn.execute(
+        """
+        UPDATE images
+        SET face_detection_model = ?,
+            faces_indexed_at = ?
+        WHERE id = ?
+        """,
+        (detection_model, indexed_at, image_id),
+    )
+
+
+def reset_faces_for_image(conn: sqlite3.Connection, image_id: int) -> None:
+    delete_faces_for_image(conn, image_id)
+    conn.execute(
+        """
+        UPDATE images
+        SET face_detection_model = '',
+            faces_indexed_at = 0
+        WHERE id = ?
+        """,
+        (image_id,),
+    )
+
+
+def list_faces_for_image(conn: sqlite3.Connection, image_id: int) -> list[FaceBox]:
+    rows = conn.execute(
+        """
+        SELECT x, y, width, height, detection_score
+        FROM faces
+        WHERE image_id = ?
+        ORDER BY id
+        """,
+        (image_id,),
+    ).fetchall()
+    return [
+        FaceBox(
+            x=float(row["x"]),
+            y=float(row["y"]),
+            width=float(row["width"]),
+            height=float(row["height"]),
+            detection_score=(
+                None if row["detection_score"] is None else float(row["detection_score"])
+            ),
+        )
+        for row in rows
+    ]
 
 
 def get_image_id(conn: sqlite3.Connection, image_path: Path) -> int:
@@ -293,6 +421,11 @@ def count_images(conn: sqlite3.Connection) -> int:
     return int(row["count"])
 
 
+def count_faces(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(*) AS count FROM faces").fetchone()
+    return int(row["count"])
+
+
 def count_searchable_images(
     conn: sqlite3.Connection,
     embedding_model: str,
@@ -373,6 +506,20 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    definition: str,
+) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
 
 def _row_to_indexed_image(row: sqlite3.Row) -> IndexedImage:
