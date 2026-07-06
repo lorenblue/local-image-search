@@ -127,14 +127,14 @@ To override the OpenCLIP model:
 CLIP_MODEL=ViT-B-16 CLIP_PRETRAINED=datacomp_xl_s13b_b90k image-search index ~/Pictures/TestPhotos
 ```
 
-To review face detection quality, generate a local HTML contact sheet:
+To review stored face boxes, generate a local HTML contact sheet:
 
 ```bash
 image-search faces-review ~/Pictures/TestPhotos --limit 50 --output data/faces-review.html
 ```
 
-The first run may download the local InsightFace model. After that, face review
-runs offline from the cached model.
+The face review command reads indexed face rows from SQLite. It does not rerun
+face detection.
 
 ## What This Project Demonstrates
 

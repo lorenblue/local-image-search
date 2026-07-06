@@ -6,9 +6,8 @@ from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from local_image_search.face_detection import FaceDetector
+from local_image_search.db import connect_readonly
 from local_image_search.models import FaceBox, ImageFile
-from local_image_search.scanner import scan_images
 
 
 @dataclass(frozen=True)
@@ -20,35 +19,130 @@ class FaceReviewItem:
 
 
 def write_face_review(
+    db_path: Path,
     roots: list[Path],
-    detector: FaceDetector,
     output_path: Path,
     limit: int,
 ) -> Path:
     if limit <= 0:
         raise ValueError("Limit must be greater than zero")
 
-    items = []
-    for image in scan_images(roots)[:limit]:
-        item = _review_image(image, detector)
-        if item is not None:
-            items.append(item)
+    with connect_readonly(db_path) as conn:
+        items, detection_models = _load_review_items(conn, roots, limit)
+
     output_path = output_path.expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(_render_html(items, detector.name), encoding="utf-8")
+    html = _render_html(items, _format_detection_models(detection_models))
+    output_path.write_text(html, encoding="utf-8")
     return output_path
 
 
-def _review_image(image: ImageFile, detector: FaceDetector) -> FaceReviewItem | None:
-    try:
-        width, height = _image_size(image.path)
-    except (OSError, UnidentifiedImageError):
-        return None
-    return FaceReviewItem(
-        image=image,
-        width=width,
-        height=height,
-        faces=detector.detect_faces(image.path),
+def _load_review_items(
+    conn,
+    roots: list[Path],
+    limit: int,
+) -> tuple[list[FaceReviewItem], set[str]]:
+    scopes = [_review_scope(root) for root in roots]
+    rows = conn.execute(
+        """
+        SELECT images.id AS image_id,
+               images.path,
+               images.file_name,
+               images.file_size,
+               images.created_at,
+               images.modified_at,
+               faces.x,
+               faces.y,
+               faces.width,
+               faces.height,
+               faces.detection_score,
+               faces.detection_model
+        FROM faces
+        JOIN images ON images.id = faces.image_id
+        ORDER BY images.path, faces.id
+        """
+    ).fetchall()
+    items: list[FaceReviewItem] = []
+    detection_models: set[str] = set()
+    current_image_id: int | None = None
+    current_image: ImageFile | None = None
+    current_faces: list[FaceBox] = []
+    current_models: set[str] = set()
+
+    def flush_current() -> None:
+        nonlocal current_image, current_faces, current_models
+        if current_image is None or len(items) >= limit:
+            return
+        if not _path_matches_scopes(current_image.path, scopes):
+            return
+        try:
+            width, height = _image_size(current_image.path)
+        except (OSError, UnidentifiedImageError):
+            return
+        items.append(
+            FaceReviewItem(
+                image=current_image,
+                width=width,
+                height=height,
+                faces=list(current_faces),
+            )
+        )
+        detection_models.update(current_models)
+
+    for row in rows:
+        image_id = int(row["image_id"])
+        if current_image_id is not None and image_id != current_image_id:
+            flush_current()
+            if len(items) >= limit:
+                break
+            current_faces = []
+            current_models = set()
+        current_image_id = image_id
+        current_image = ImageFile(
+            path=Path(row["path"]),
+            file_name=str(row["file_name"]),
+            file_size=int(row["file_size"]),
+            created_at=row["created_at"],
+            modified_at=float(row["modified_at"]),
+        )
+        current_faces.append(
+            FaceBox(
+                x=float(row["x"]),
+                y=float(row["y"]),
+                width=float(row["width"]),
+                height=float(row["height"]),
+                detection_score=(
+                    None if row["detection_score"] is None else float(row["detection_score"])
+                ),
+            )
+        )
+        if row["detection_model"]:
+            current_models.add(str(row["detection_model"]))
+
+    if len(items) < limit:
+        flush_current()
+
+    return items, detection_models
+
+
+def _format_detection_models(detection_models: set[str]) -> str:
+    if not detection_models:
+        return "stored faces"
+    return ", ".join(sorted(detection_models))
+
+
+def _review_scope(root: Path) -> tuple[Path, bool]:
+    normalized = root.expanduser().resolve(strict=False)
+    return normalized, root.is_file()
+
+
+def _path_matches_scopes(path: Path, scopes: list[tuple[Path, bool]]) -> bool:
+    if not scopes:
+        return True
+    normalized = path.expanduser().resolve(strict=False)
+    return any(
+        normalized == root if exact_match else normalized == root or normalized.is_relative_to(root)
+        for root, exact_match in scopes
     )
 
 
@@ -65,10 +159,10 @@ def _image_size(image_path: Path) -> tuple[int, int]:
         return image.size
 
 
-def _render_html(items: list[FaceReviewItem], detector_name: str) -> str:
+def _render_html(items: list[FaceReviewItem], detection_model_label: str) -> str:
     cards = "\n".join(_render_item(item) for item in items)
     total_faces = sum(len(item.faces) for item in items)
-    summary = f"{len(items)} images · {total_faces} detected faces · {_escape(detector_name)}"
+    summary = f"{len(items)} images · {total_faces} stored faces · {_escape(detection_model_label)}"
     return f"""<!doctype html>
 <html lang="en">
 <head>

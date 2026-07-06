@@ -100,13 +100,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     faces_review_parser = subparsers.add_parser(
         "faces-review",
-        help="Generate an HTML contact sheet for reviewing face detection quality",
+        help="Generate an HTML contact sheet from stored face boxes",
     )
-    faces_review_parser.add_argument("roots", nargs="+", type=Path, help="Image files or folders")
     faces_review_parser.add_argument(
-        "--face-detector",
-        default=DEFAULT_FACE_DETECTOR,
-        choices=["insightface"],
+        "roots",
+        nargs="*",
+        type=Path,
+        help="Optional indexed image files or folders to include",
     )
     faces_review_parser.add_argument("--limit", type=int, default=50)
     faces_review_parser.add_argument(
@@ -232,8 +232,7 @@ def handle_serve(args: argparse.Namespace) -> int:
 
 
 def handle_faces_review(args: argparse.Namespace) -> int:
-    detector = make_face_detector(args.face_detector)
-    output_path = write_face_review(args.roots, detector, args.output, args.limit)
+    output_path = write_face_review(args.db, args.roots, args.output, args.limit)
     print(f"wrote {output_path}")
     return 0
 
