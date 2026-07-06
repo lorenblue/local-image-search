@@ -158,10 +158,11 @@ def needs_face_indexing(
     conn: sqlite3.Connection,
     image_path: Path,
     detection_model: str,
+    embedding_model: str,
 ) -> bool:
     row = conn.execute(
         """
-        SELECT face_detection_model, faces_indexed_at
+        SELECT id, face_detection_model, faces_indexed_at
         FROM images
         WHERE path = ?
         """,
@@ -172,7 +173,39 @@ def needs_face_indexing(
     return (
         row["face_detection_model"] != detection_model
         or float(row["faces_indexed_at"]) <= 0
+        or _has_stale_face_embeddings(conn, int(row["id"]), embedding_model)
     )
+
+
+def _has_stale_face_embeddings(
+    conn: sqlite3.Connection,
+    image_id: int,
+    embedding_model: str,
+) -> bool:
+    if not face_vector_table_exists(conn):
+        row = conn.execute(
+            "SELECT COUNT(*) AS count FROM faces WHERE image_id = ?",
+            (image_id,),
+        ).fetchone()
+        return int(row["count"]) > 0
+
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS count
+        FROM faces
+        WHERE faces.image_id = ?
+          AND (
+            faces.embedding_model != ?
+            OR NOT EXISTS (
+              SELECT 1
+              FROM {FACE_VECTOR_TABLE_NAME}
+              WHERE {FACE_VECTOR_TABLE_NAME}.rowid = faces.id
+            )
+          )
+        """,
+        (image_id, embedding_model),
+    ).fetchone()
+    return int(row["count"]) > 0
 
 
 def upsert_indexed_image(
@@ -234,24 +267,31 @@ def upsert_faces_for_image(
     image_id: int,
     detection_model: str,
     faces: list[FaceBox],
+    embedding_model: str | None = None,
 ) -> None:
     reset_faces_for_image(conn, image_id)
     indexed_at = time.time()
-    conn.executemany(
-        """
-        INSERT INTO faces (
-            image_id,
-            x,
-            y,
-            width,
-            height,
-            detection_score,
-            detection_model,
-            indexed_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
+    embedding_model = embedding_model or detection_model
+    if any(face.embedding is not None for face in faces):
+        ensure_face_vector_table(conn)
+
+    for face in faces:
+        face_embedding_model = embedding_model if face.embedding is not None else ""
+        cursor = conn.execute(
+            """
+            INSERT INTO faces (
+                image_id,
+                x,
+                y,
+                width,
+                height,
+                detection_score,
+                detection_model,
+                embedding_model,
+                indexed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
             (
                 image_id,
                 face.x,
@@ -260,11 +300,17 @@ def upsert_faces_for_image(
                 face.height,
                 face.detection_score,
                 detection_model,
+                face_embedding_model,
                 indexed_at,
+            ),
+        )
+        if face.embedding is not None:
+            _validate_embedding_dimensions(face.embedding)
+            conn.execute(
+                f"INSERT INTO {FACE_VECTOR_TABLE_NAME} (rowid, embedding) VALUES (?, ?)",
+                (cursor.lastrowid, serialize_embedding(face.embedding)),
             )
-            for face in faces
-        ],
-    )
+
     conn.execute(
         """
         UPDATE images
@@ -423,6 +469,15 @@ def count_images(conn: sqlite3.Connection) -> int:
 
 def count_faces(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COUNT(*) AS count FROM faces").fetchone()
+    return int(row["count"])
+
+
+def count_face_embeddings(conn: sqlite3.Connection) -> int:
+    if not face_vector_table_exists(conn):
+        return 0
+    row = conn.execute(
+        f"SELECT COUNT(*) AS count FROM {FACE_VECTOR_TABLE_NAME}"
+    ).fetchone()
     return int(row["count"])
 
 

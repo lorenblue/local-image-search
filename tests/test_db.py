@@ -7,6 +7,7 @@ from local_image_search.db import (
     FACE_VECTOR_TABLE_NAME,
     connect,
     connect_readonly,
+    count_face_embeddings,
     count_faces,
     count_images,
     count_searchable_images,
@@ -155,7 +156,14 @@ def test_upsert_faces_for_image_replaces_existing_face_rows(tmp_path: Path) -> N
             image_id,
             "detector-a",
             [
-                FaceBox(x=1, y=2, width=3, height=4, detection_score=0.9),
+                FaceBox(
+                    x=1,
+                    y=2,
+                    width=3,
+                    height=4,
+                    detection_score=0.9,
+                    embedding=[1.0] + [0.0] * 511,
+                ),
                 FaceBox(x=5, y=6, width=7, height=8, detection_score=None),
             ],
         )
@@ -172,11 +180,64 @@ def test_upsert_faces_for_image_replaces_existing_face_rows(tmp_path: Path) -> N
             "SELECT face_detection_model, faces_indexed_at FROM images WHERE id = ?",
             (image_id,),
         ).fetchone()
+        face_row = conn.execute(
+            "SELECT embedding_model FROM faces WHERE image_id = ?",
+            (image_id,),
+        ).fetchone()
 
         assert count_faces(conn) == 1
+        assert count_face_embeddings(conn) == 0
         assert faces == [FaceBox(x=9, y=10, width=11, height=12, detection_score=0.8)]
+        assert face_row["embedding_model"] == ""
         assert image_row["face_detection_model"] == "detector-b"
         assert image_row["faces_indexed_at"] > 0
+
+
+def test_upsert_faces_for_image_stores_face_embedding_vectors(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    image_path = tmp_path / "portrait.jpg"
+    image = ImageFile(image_path, image_path.name, 10, None, 1)
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn)
+        image_id = upsert_indexed_image(
+            conn,
+            image,
+            "test-clip",
+            [1.0] + [0.0] * 511,
+            None,
+        )
+
+        upsert_faces_for_image(
+            conn,
+            image_id,
+            "test-face",
+            [
+                FaceBox(
+                    x=1,
+                    y=2,
+                    width=3,
+                    height=4,
+                    detection_score=0.9,
+                    embedding=[0.0, 1.0] + [0.0] * 510,
+                )
+            ],
+        )
+        conn.commit()
+
+        face_row = conn.execute(
+            "SELECT id, embedding_model FROM faces WHERE image_id = ?",
+            (image_id,),
+        ).fetchone()
+        vector_row = conn.execute(
+            f"SELECT COUNT(*) AS count FROM {FACE_VECTOR_TABLE_NAME} WHERE rowid = ?",
+            (face_row["id"],),
+        ).fetchone()
+
+        assert face_row["embedding_model"] == "test-face"
+        assert count_face_embeddings(conn) == 1
+        assert vector_row["count"] == 1
 
 
 def test_delete_missing_paths_removes_face_metadata_and_vectors(tmp_path: Path) -> None:

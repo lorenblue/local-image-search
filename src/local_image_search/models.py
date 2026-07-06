@@ -38,3 +38,4 @@ class FaceBox:
     width: float
     height: float
     detection_score: float | None
+    embedding: list[float] | None = None

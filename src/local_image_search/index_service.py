@@ -126,6 +126,7 @@ def index_roots(
                     conn,
                     image.path,
                     face_detector.name,
+                    face_detector.embedding_model,
                 ):
                     progress.faces_indexed += _detect_and_store_faces(
                         conn,
@@ -239,7 +240,13 @@ def _detect_and_store_faces(
     face_detector: FaceDetector,
 ) -> int:
     faces = face_detector.detect_faces(image_path)
-    upsert_faces_for_image(conn, image_id, face_detector.name, faces)
+    upsert_faces_for_image(
+        conn,
+        image_id,
+        face_detector.name,
+        faces,
+        embedding_model=face_detector.embedding_model,
+    )
     return len(faces)
 
 

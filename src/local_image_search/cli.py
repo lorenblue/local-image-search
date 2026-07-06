@@ -8,7 +8,13 @@ from pathlib import Path
 
 from local_image_search.clip import make_clip_embedder
 from local_image_search.config import DEFAULT_DB_PATH
-from local_image_search.db import connect, count_faces, count_images, init_db
+from local_image_search.db import (
+    connect,
+    count_face_embeddings,
+    count_faces,
+    count_images,
+    init_db,
+)
 from local_image_search.face_detection import DEFAULT_FACE_DETECTOR, make_face_detector
 from local_image_search.face_review import write_face_review
 from local_image_search.index_service import IndexProgress, index_roots
@@ -132,9 +138,11 @@ def handle_status(args: argparse.Namespace) -> int:
         init_db(conn)
         total = count_images(conn)
         faces = count_faces(conn)
+        face_embeddings = count_face_embeddings(conn)
     print(f"database: {args.db}")
     print(f"indexed images: {total}")
     print(f"indexed faces: {faces}")
+    print(f"indexed face embeddings: {face_embeddings}")
     return 0
 
 

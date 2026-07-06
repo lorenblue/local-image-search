@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import warnings
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -14,6 +15,10 @@ DEFAULT_FACE_DETECTOR = "insightface"
 
 class FaceDetector(ABC):
     name: str
+
+    @property
+    def embedding_model(self) -> str:
+        return self.name
 
     @abstractmethod
     def detect_faces(self, image_path: Path) -> list[FaceBox]:
@@ -41,7 +46,7 @@ class InsightFaceDetector(FaceDetector):
             with contextlib.redirect_stdout(io.StringIO()):
                 app = FaceAnalysis(
                     name=model_name,
-                    allowed_modules=["detection"],
+                    allowed_modules=["detection", "recognition"],
                     providers=["CPUExecutionProvider"],
                 )
                 app.prepare(ctx_id=-1, det_size=det_size)
@@ -49,7 +54,7 @@ class InsightFaceDetector(FaceDetector):
             raise RuntimeError(
                 "InsightFace could not load its local model. "
                 "Run this once while online so the model can download, then retry: "
-                "image-search faces-review ~/Pictures --face-detector insightface"
+                "image-search index ~/Pictures"
             ) from exc
 
         self._app = app
@@ -67,10 +72,13 @@ class InsightFaceDetector(FaceDetector):
             image = ImageOps.exif_transpose(image).convert("RGB")
             image_array = self._np.asarray(image)[:, :, ::-1]
 
-        faces = self._app.get(image_array)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            faces = self._app.get(image_array)
         boxes: list[FaceBox] = []
         for face in faces:
             x1, y1, x2, y2 = face.bbox
+            embedding = getattr(face, "normed_embedding", None)
             boxes.append(
                 FaceBox(
                     x=float(x1),
@@ -78,6 +86,11 @@ class InsightFaceDetector(FaceDetector):
                     width=float(x2 - x1),
                     height=float(y2 - y1),
                     detection_score=float(face.det_score),
+                    embedding=(
+                        None
+                        if embedding is None
+                        else [float(value) for value in embedding.tolist()]
+                    ),
                 )
             )
         return boxes

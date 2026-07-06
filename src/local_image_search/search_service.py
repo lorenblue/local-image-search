@@ -7,6 +7,7 @@ from pathlib import Path
 from local_image_search.clip import ClipEmbedder
 from local_image_search.db import (
     connect_readonly,
+    count_face_embeddings,
     count_faces,
     count_images,
     count_searchable_images,
@@ -32,16 +33,19 @@ class SearchService:
             with connect_readonly(self.db_path) as conn:
                 total = count_images(conn)
                 faces = count_faces(conn)
+                face_embeddings = count_face_embeddings(conn)
                 searchable = count_searchable_images(conn, self.clip_embedder.name)
         except (FileNotFoundError, sqlite3.OperationalError):
             total = 0
             faces = 0
+            face_embeddings = 0
             searchable = 0
         return {
             "database": str(self.db_path),
             "clipEmbedder": self.clip_embedder.name,
             "indexedImages": total,
             "indexedFaces": faces,
+            "indexedFaceEmbeddings": face_embeddings,
             "memory": memory_status(),
             "searchableImages": searchable,
             "uptimeSeconds": round(time.time() - self.started_at, 3),
