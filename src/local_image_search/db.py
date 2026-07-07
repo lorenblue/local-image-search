@@ -497,6 +497,46 @@ def search_similar_faces(
     return results
 
 
+def get_primary_face_for_image(
+    conn: sqlite3.Connection,
+    image_id: int,
+) -> IndexedFace | None:
+    if not face_vector_table_exists(conn):
+        return None
+
+    row = conn.execute(
+        f"""
+        SELECT faces.id AS face_id,
+               faces.x,
+               faces.y,
+               faces.width,
+               faces.height,
+               faces.detection_score,
+               faces.embedding_model AS face_embedding_model,
+               images.id,
+               images.path,
+               images.file_name,
+               images.file_size,
+               images.created_at,
+               images.modified_at,
+               images.embedding_model,
+               images.thumbnail_path
+        FROM faces
+        JOIN images ON images.id = faces.image_id
+        JOIN {FACE_VECTOR_TABLE_NAME} ON {FACE_VECTOR_TABLE_NAME}.rowid = faces.id
+        WHERE images.id = ?
+        ORDER BY (faces.width * faces.height) DESC,
+                 COALESCE(faces.detection_score, 0) DESC,
+                 faces.id
+        LIMIT 1
+        """,
+        (image_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_indexed_face(row, _row_to_indexed_image(row))
+
+
 def delete_missing_paths(
     conn: sqlite3.Connection,
     seen_paths: Iterable[Path],

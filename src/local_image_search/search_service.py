@@ -11,11 +11,12 @@ from local_image_search.db import (
     count_faces,
     count_images,
     count_searchable_images,
+    get_primary_face_for_image,
     search_indexed_images,
     search_similar_faces,
 )
 from local_image_search.metrics import memory_status
-from local_image_search.models import FaceSearchResult, SearchResult
+from local_image_search.models import FaceSearchResult, IndexedFace, SearchResult
 
 
 class SearchService:
@@ -103,6 +104,13 @@ class SearchService:
             "results": _serialize_face_results(results),
         }
 
+    def primary_face(self, image_id: int) -> dict:
+        with connect_readonly(self.db_path) as conn:
+            face = get_primary_face_for_image(conn, image_id)
+        if face is None:
+            raise ValueError(f"No indexed face embedding was found for image: {image_id}")
+        return _serialize_face(face)
+
 
 def _serialize_results(results: list[SearchResult]) -> list[dict]:
     return [
@@ -148,3 +156,25 @@ def _serialize_face_results(results: list[FaceSearchResult]) -> list[dict]:
         }
         for result in results
     ]
+
+
+def _serialize_face(face: IndexedFace) -> dict:
+    return {
+        "faceId": face.id,
+        "imageId": face.image.id,
+        "path": str(face.image.path),
+        "fileName": face.image.file_name,
+        "faceEmbeddingModel": face.embedding_model,
+        "thumbnailPath": str(face.image.thumbnail_path) if face.image.thumbnail_path else None,
+        "box": {
+            "x": round(face.box.x, 3),
+            "y": round(face.box.y, 3),
+            "width": round(face.box.width, 3),
+            "height": round(face.box.height, 3),
+            "detectionScore": (
+                None
+                if face.box.detection_score is None
+                else round(face.box.detection_score, 6)
+            ),
+        },
+    }

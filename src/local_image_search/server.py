@@ -76,6 +76,15 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.get("/primary-face")
+    def primary_face(
+        image_id: int = Query(alias="imageId", ge=1),
+    ) -> dict:
+        try:
+            return service.primary_face(image_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     app.state.search_service = service
     app.state.index_service = indexer
     return app

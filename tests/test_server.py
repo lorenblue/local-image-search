@@ -238,6 +238,38 @@ def test_api_similar_face_returns_ranked_face_results(tmp_path: Path) -> None:
     assert body["results"][0]["box"]["x"] == 5
 
 
+def test_api_primary_face_returns_largest_indexed_face_for_image(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    clip_embedder = StubClipEmbedder()
+    image_path = tmp_path / "group.jpg"
+    image_path.write_bytes(b"test image placeholder")
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        image_id = _insert_face_image(conn, image_path, clip_embedder)
+        upsert_faces_for_image(
+            conn,
+            image_id,
+            "test-face",
+            [
+                FaceBox(1, 2, 10, 10, 0.99, embedding=[1.0] + [0.0] * 511),
+                FaceBox(5, 6, 30, 30, 0.80, embedding=[0.0, 1.0] + [0.0] * 510),
+            ],
+        )
+        conn.commit()
+
+    client = TestClient(create_app(db_path, clip_embedder))
+
+    response = client.get("/primary-face", params={"imageId": image_id})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["imageId"] == image_id
+    assert body["fileName"] == image_path.name
+    assert body["box"]["x"] == 5
+    assert body["box"]["width"] == 30
+
+
 def test_memory_status_reports_current_and_peak_memory() -> None:
     memory = memory_status()
 

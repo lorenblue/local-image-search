@@ -5,8 +5,10 @@ import {
   Detail,
   Grid,
   Icon,
+  Toast,
   getPreferenceValues,
   open,
+  showToast,
 } from "@raycast/api";
 import { useEffect, useMemo, useState } from "react";
 
@@ -20,6 +22,7 @@ type Preferences = {
 
 type SearchResult = {
   id: number;
+  faceId?: number;
   path: string;
   fileName: string;
   score: number;
@@ -39,6 +42,42 @@ type SimilarResponse = {
   limit: number;
   elapsedMs: number;
   results: SearchResult[];
+};
+
+type FaceBox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  detectionScore: number | null;
+};
+
+type FaceResult = {
+  faceId: number;
+  imageId: number;
+  path: string;
+  fileName: string;
+  score: number;
+  faceEmbeddingModel: string;
+  thumbnailPath: string | null;
+  box: FaceBox;
+};
+
+type SimilarFaceResponse = {
+  faceId: number;
+  limit: number;
+  elapsedMs: number;
+  results: FaceResult[];
+};
+
+type PrimaryFaceResponse = {
+  faceId: number;
+  imageId: number;
+  path: string;
+  fileName: string;
+  faceEmbeddingModel: string;
+  thumbnailPath: string | null;
+  box: FaceBox;
 };
 
 type StatusResponse = {
@@ -76,6 +115,8 @@ export default function Command() {
   const apiBaseUrl = normalizeBaseUrl(preferences.apiBaseUrl);
   const [query, setQuery] = useState("");
   const [similarSource, setSimilarSource] = useState<SearchResult | null>(null);
+  const [similarFaceSource, setSimilarFaceSource] =
+    useState<SearchResult | null>(null);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selectedItemId, setSelectedItemId] = useState<string | undefined>();
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -146,7 +187,7 @@ export default function Command() {
 
   useEffect(() => {
     const trimmedQuery = query.trim();
-    if (!trimmedQuery && !similarSource) {
+    if (!trimmedQuery && !similarSource && !similarFaceSource) {
       setResults([]);
       setSelectedItemId(undefined);
       return;
@@ -157,21 +198,26 @@ export default function Command() {
       setIsLoading(true);
       setError(null);
       try {
-        const url = new URL(
-          trimmedQuery ? `${apiBaseUrl}/search` : `${apiBaseUrl}/similar`,
-        );
+        const url = new URL(searchUrl(apiBaseUrl, trimmedQuery, similarFaceSource));
         if (trimmedQuery) {
           url.searchParams.set("q", trimmedQuery);
+        } else if (similarFaceSource?.faceId) {
+          url.searchParams.set("faceId", String(similarFaceSource.faceId));
         } else if (similarSource) {
           url.searchParams.set("path", similarSource.path);
         }
         url.searchParams.set("limit", String(DEFAULT_LIMIT));
-        const response = await fetchJson<SearchResponse | SimilarResponse>(
+        const response = await fetchJson<
+          SearchResponse | SimilarResponse | SimilarFaceResponse
+        >(
           url.toString(),
           controller.signal,
         );
-        setResults(response.results);
-        setSelectedItemId(resultItemId(response.results[0]));
+        const nextResults = similarFaceSource
+          ? (response as SimilarFaceResponse).results.map(faceResultToSearchResult)
+          : (response as SearchResponse | SimilarResponse).results;
+        setResults(nextResults);
+        setSelectedItemId(resultItemId(nextResults[0]));
       } catch (unknownError) {
         if (!controller.signal.aborted) {
           setError(errorMessage(unknownError));
@@ -187,9 +233,12 @@ export default function Command() {
       clearTimeout(timeout);
       controller.abort();
     };
-  }, [apiBaseUrl, query, similarSource]);
+  }, [apiBaseUrl, query, similarSource, similarFaceSource]);
 
   const searchBarPlaceholder = useMemo(() => {
+    if (similarFaceSource) {
+      return `Similar faces to ${similarFaceSource.fileName}`;
+    }
     if (similarSource) {
       return `Similar to ${similarSource.fileName}`;
     }
@@ -207,6 +256,29 @@ export default function Command() {
     setQuery(text);
     if (text.trim()) {
       setSimilarSource(null);
+      setSimilarFaceSource(null);
+    }
+  }
+
+  async function handleFindSimilarFace(result: SearchResult) {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const url = new URL(`${apiBaseUrl}/primary-face`);
+      url.searchParams.set("imageId", String(result.id));
+      const primaryFace = await fetchJson<PrimaryFaceResponse>(url.toString());
+      setSimilarFaceSource({ ...result, faceId: primaryFace.faceId });
+      setSimilarSource(null);
+      setQuery("");
+      setSelectedItemId(undefined);
+    } catch (unknownError) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "No Similar Face Search",
+        message: errorMessage(unknownError),
+      });
+    } finally {
+      setIsLoading(false);
     }
   }
 
@@ -225,7 +297,11 @@ export default function Command() {
       inset={Grid.Inset.Small}
       isLoading={isLoading}
       navigationTitle={
-        query.trim() || !similarSource ? "Search Images" : "Similar Images"
+        query.trim() || (!similarSource && !similarFaceSource)
+          ? "Search Images"
+          : similarFaceSource
+            ? "Similar Faces"
+            : "Similar Images"
       }
       onSearchTextChange={handleSearchTextChange}
       onSelectionChange={(id) => setSelectedItemId(id ?? undefined)}
@@ -234,7 +310,7 @@ export default function Command() {
       selectedItemId={selectedItemId}
       throttle
     >
-      {!query.trim() && !similarSource && status ? (
+      {!query.trim() && !similarSource && !similarFaceSource && status ? (
         <StatusItem status={status} apiBaseUrl={apiBaseUrl} />
       ) : null}
       {results.map((result) => (
@@ -243,8 +319,10 @@ export default function Command() {
           result={result}
           onFindSimilar={() => {
             setSimilarSource(result);
+            setSimilarFaceSource(null);
             setQuery("");
           }}
+          onFindSimilarFace={() => handleFindSimilarFace(result)}
           onTrash={() => handleResultTrashed(result.path)}
         />
       ))}
@@ -285,10 +363,12 @@ function StatusItem({
 function ResultItem({
   result,
   onFindSimilar,
+  onFindSimilarFace,
   onTrash,
 }: {
   result: SearchResult;
   onFindSimilar: () => void;
+  onFindSimilarFace: () => void;
   onTrash: () => void;
 }) {
   const content = result.thumbnailPath
@@ -325,6 +405,11 @@ function ResultItem({
               title="Find Similar Images"
               icon={Icon.BullsEye}
               onAction={onFindSimilar}
+            />
+            <Action
+              title="Find Similar Faces"
+              icon={Icon.Person}
+              onAction={onFindSimilarFace}
             />
             <Action.CopyToClipboard title="Copy Path" content={result.path} />
           </ActionPanel.Section>
@@ -393,7 +478,36 @@ function scoreLabel(score: number): string {
 }
 
 function resultItemId(result: SearchResult | undefined): string | undefined {
-  return result ? String(result.id) : undefined;
+  if (!result) {
+    return undefined;
+  }
+  return result.faceId ? `face-${result.faceId}` : `image-${result.id}`;
+}
+
+function searchUrl(
+  apiBaseUrl: string,
+  trimmedQuery: string,
+  similarFaceSource: SearchResult | null,
+): string {
+  if (trimmedQuery) {
+    return `${apiBaseUrl}/search`;
+  }
+  if (similarFaceSource) {
+    return `${apiBaseUrl}/similar-face`;
+  }
+  return `${apiBaseUrl}/similar`;
+}
+
+function faceResultToSearchResult(result: FaceResult): SearchResult {
+  return {
+    id: result.imageId,
+    faceId: result.faceId,
+    path: result.path,
+    fileName: result.fileName,
+    score: result.score,
+    embeddingModel: result.faceEmbeddingModel,
+    thumbnailPath: result.thumbnailPath,
+  };
 }
 
 function parseIndexedFolders(value: string | undefined): string[] {

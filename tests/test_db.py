@@ -15,6 +15,7 @@ from local_image_search.db import (
     ensure_face_vector_table,
     ensure_vector_table,
     get_image_id,
+    get_primary_face_for_image,
     init_db,
     list_faces_for_image,
     search_similar_faces,
@@ -293,6 +294,34 @@ def test_search_similar_faces_returns_nearest_face_vectors(tmp_path: Path) -> No
         assert [result.face.id for result in results] == [near_face_id, far_face_id]
         assert [result.face.image.path for result in results] == [near_path, far_path]
         assert results[0].score > results[1].score
+
+
+def test_get_primary_face_for_image_uses_largest_indexed_face(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    image_path = tmp_path / "group.jpg"
+    image_path.write_bytes(b"test image placeholder")
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn)
+        image_id = _insert_indexed_image(conn, image_path)
+        upsert_faces_for_image(
+            conn,
+            image_id,
+            "test-face",
+            [
+                FaceBox(1, 2, 10, 10, 0.99, embedding=[1.0] + [0.0] * 511),
+                FaceBox(5, 6, 30, 30, 0.80, embedding=[0.0, 1.0] + [0.0] * 510),
+            ],
+        )
+        conn.commit()
+
+        primary = get_primary_face_for_image(conn, image_id)
+
+        assert primary is not None
+        assert primary.image.path == image_path
+        assert primary.box.x == 5
+        assert primary.box.width == 30
 
 
 def test_delete_missing_paths_removes_face_metadata_and_vectors(tmp_path: Path) -> None:
