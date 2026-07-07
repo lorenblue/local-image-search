@@ -38,6 +38,7 @@ def test_write_face_review_draws_stored_detected_boxes(tmp_path: Path) -> None:
     assert "portrait.jpg" in html
     assert "1 stored faces" in html
     assert "test-face" in html
+    assert "#1" in html
     assert "left:10.000%;top:10.000%;width:30.000%;height:20.000%" in html
 
 

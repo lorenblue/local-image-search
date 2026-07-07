@@ -17,6 +17,7 @@ from local_image_search.db import (
     get_image_id,
     init_db,
     list_faces_for_image,
+    search_similar_faces,
     serialize_embedding,
     upsert_faces_for_image,
     upsert_indexed_image,
@@ -240,6 +241,60 @@ def test_upsert_faces_for_image_stores_face_embedding_vectors(tmp_path: Path) ->
         assert vector_row["count"] == 1
 
 
+def test_search_similar_faces_returns_nearest_face_vectors(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    source_path = tmp_path / "source.jpg"
+    near_path = tmp_path / "near.jpg"
+    far_path = tmp_path / "far.jpg"
+    for path in [source_path, near_path, far_path]:
+        path.write_bytes(b"test image placeholder")
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn)
+        source_image_id = _insert_indexed_image(conn, source_path)
+        near_image_id = _insert_indexed_image(conn, near_path)
+        far_image_id = _insert_indexed_image(conn, far_path)
+        upsert_faces_for_image(
+            conn,
+            source_image_id,
+            "test-face",
+            [FaceBox(1, 2, 3, 4, 0.99, embedding=[1.0] + [0.0] * 511)],
+        )
+        upsert_faces_for_image(
+            conn,
+            near_image_id,
+            "test-face",
+            [FaceBox(5, 6, 7, 8, 0.98, embedding=_normalize([0.9, 0.1] + [0.0] * 510))],
+        )
+        upsert_faces_for_image(
+            conn,
+            far_image_id,
+            "test-face",
+            [FaceBox(9, 10, 11, 12, 0.97, embedding=[0.0, 1.0] + [0.0] * 510)],
+        )
+        conn.commit()
+
+        source_face_id = conn.execute(
+            "SELECT id FROM faces WHERE image_id = ?",
+            (source_image_id,),
+        ).fetchone()["id"]
+        near_face_id = conn.execute(
+            "SELECT id FROM faces WHERE image_id = ?",
+            (near_image_id,),
+        ).fetchone()["id"]
+        far_face_id = conn.execute(
+            "SELECT id FROM faces WHERE image_id = ?",
+            (far_image_id,),
+        ).fetchone()["id"]
+
+        results = search_similar_faces(conn, source_face_id, limit=2)
+
+        assert [result.face.id for result in results] == [near_face_id, far_face_id]
+        assert [result.face.image.path for result in results] == [near_path, far_path]
+        assert results[0].score > results[1].score
+
+
 def test_delete_missing_paths_removes_face_metadata_and_vectors(tmp_path: Path) -> None:
     db_path = tmp_path / "images.db"
     album = tmp_path / "album"
@@ -291,3 +346,24 @@ def test_delete_missing_paths_removes_face_metadata_and_vectors(tmp_path: Path) 
         assert conn.execute(f"SELECT COUNT(*) AS count FROM {FACE_VECTOR_TABLE_NAME}").fetchone()[
             "count"
         ] == 0
+
+
+def _insert_indexed_image(conn: sqlite3.Connection, image_path: Path) -> int:
+    return upsert_indexed_image(
+        conn,
+        ImageFile(
+            image_path,
+            image_path.name,
+            image_path.stat().st_size,
+            None,
+            image_path.stat().st_mtime,
+        ),
+        "test-clip",
+        [1.0] + [0.0] * 511,
+        None,
+    )
+
+
+def _normalize(values: list[float]) -> list[float]:
+    magnitude = sum(value * value for value in values) ** 0.5
+    return [value / magnitude for value in values]

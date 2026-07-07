@@ -7,9 +7,15 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from local_image_search.clip import StubClipEmbedder
-from local_image_search.db import connect, ensure_vector_table, init_db, upsert_indexed_image
+from local_image_search.db import (
+    connect,
+    ensure_vector_table,
+    init_db,
+    upsert_faces_for_image,
+    upsert_indexed_image,
+)
 from local_image_search.metrics import memory_status
-from local_image_search.models import ImageFile
+from local_image_search.models import FaceBox, ImageFile
 from local_image_search.search_service import SearchService
 from local_image_search.server import create_app
 
@@ -186,6 +192,52 @@ def test_api_similar_returns_404_for_missing_reference_image(tmp_path: Path) -> 
     assert response.status_code == 404
 
 
+def test_api_similar_face_returns_ranked_face_results(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    clip_embedder = StubClipEmbedder()
+    source_path = tmp_path / "source.jpg"
+    near_path = tmp_path / "near.jpg"
+    for path in [source_path, near_path]:
+        path.write_bytes(b"test image placeholder")
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        source_image_id = _insert_face_image(conn, source_path, clip_embedder)
+        near_image_id = _insert_face_image(conn, near_path, clip_embedder)
+        upsert_faces_for_image(
+            conn,
+            source_image_id,
+            "test-face",
+            [FaceBox(1, 2, 3, 4, 0.99, embedding=[1.0] + [0.0] * 511)],
+        )
+        upsert_faces_for_image(
+            conn,
+            near_image_id,
+            "test-face",
+            [FaceBox(5, 6, 7, 8, 0.98, embedding=[0.99, 0.01] + [0.0] * 510)],
+        )
+        conn.commit()
+        source_face_id = conn.execute(
+            "SELECT id FROM faces WHERE image_id = ?",
+            (source_image_id,),
+        ).fetchone()["id"]
+        near_face_id = conn.execute(
+            "SELECT id FROM faces WHERE image_id = ?",
+            (near_image_id,),
+        ).fetchone()["id"]
+
+    client = TestClient(create_app(db_path, clip_embedder))
+
+    response = client.get("/similar-face", params={"faceId": source_face_id, "limit": 1})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["faceId"] == source_face_id
+    assert body["results"][0]["faceId"] == near_face_id
+    assert body["results"][0]["fileName"] == near_path.name
+    assert body["results"][0]["box"]["x"] == 5
+
+
 def test_memory_status_reports_current_and_peak_memory() -> None:
     memory = memory_status()
 
@@ -235,6 +287,27 @@ def _insert_indexed_image(
         clip_embedder.name,
         clip_embedder.embed_image(image.path),
         thumbnail_path=thumbnail_path,
+    )
+
+
+def _insert_face_image(
+    conn,
+    image_path: Path,
+    clip_embedder: StubClipEmbedder,
+) -> int:
+    ensure_vector_table(conn)
+    return upsert_indexed_image(
+        conn,
+        ImageFile(
+            path=image_path,
+            file_name=image_path.name,
+            file_size=image_path.stat().st_size,
+            created_at=None,
+            modified_at=image_path.stat().st_mtime,
+        ),
+        clip_embedder.name,
+        clip_embedder.embed_image(image_path),
+        thumbnail_path=None,
     )
 
 

@@ -134,7 +134,12 @@ image-search faces-review ~/Pictures/TestPhotos --limit 50 --output data/faces-r
 ```
 
 The face review command reads indexed face rows from SQLite. It does not rerun
-face detection.
+face detection. The review page shows each stored face ID, which can be used for
+similar-face search:
+
+```bash
+image-search similar-face 123 --limit 10
+```
 
 ## What This Project Demonstrates
 
@@ -149,4 +154,4 @@ face detection.
 1. Compare OpenCLIP models on real photos.
 2. Add OCR as a separate searchable field for text inside images.
 3. Add saved searches or folder presets.
-4. Explore face embeddings and clustering without identity recognition.
+4. Explore face clustering without identity recognition.

@@ -5,7 +5,14 @@ import time
 from collections.abc import Iterable
 from pathlib import Path
 
-from local_image_search.models import FaceBox, ImageFile, IndexedImage, SearchResult
+from local_image_search.models import (
+    FaceBox,
+    FaceSearchResult,
+    ImageFile,
+    IndexedFace,
+    IndexedImage,
+    SearchResult,
+)
 
 SQLITE_TIMEOUT_SECONDS = 30
 VECTOR_TABLE_NAME = "image_embeddings"
@@ -419,6 +426,77 @@ def search_indexed_images(
     return results
 
 
+def search_similar_faces(
+    conn: sqlite3.Connection,
+    face_id: int,
+    limit: int,
+) -> list[FaceSearchResult]:
+    if limit <= 0:
+        return []
+    if not face_vector_table_exists(conn):
+        return []
+
+    source = conn.execute(
+        f"""
+        SELECT faces.embedding_model, {FACE_VECTOR_TABLE_NAME}.embedding
+        FROM faces
+        JOIN {FACE_VECTOR_TABLE_NAME} ON {FACE_VECTOR_TABLE_NAME}.rowid = faces.id
+        WHERE faces.id = ?
+        """,
+        (face_id,),
+    ).fetchone()
+    if source is None:
+        raise ValueError(f"Face embedding was not found: {face_id}")
+
+    search_limit = (limit * SEARCH_OVERFETCH_MULTIPLIER) + 1
+    rows = conn.execute(
+        f"""
+        SELECT faces.id AS face_id,
+               faces.x,
+               faces.y,
+               faces.width,
+               faces.height,
+               faces.detection_score,
+               faces.embedding_model AS face_embedding_model,
+               images.id,
+               images.path,
+               images.file_name,
+               images.file_size,
+               images.created_at,
+               images.modified_at,
+               images.embedding_model,
+               images.thumbnail_path,
+               matches.distance,
+               (1.0 - ((matches.distance * matches.distance) / 2.0)) AS score
+        FROM {FACE_VECTOR_TABLE_NAME} AS matches
+        JOIN faces ON faces.id = matches.rowid
+        JOIN images ON images.id = faces.image_id
+        WHERE matches.embedding MATCH ?
+          AND matches.k = ?
+          AND faces.embedding_model = ?
+        ORDER BY matches.distance
+        """,
+        (source["embedding"], search_limit, source["embedding_model"]),
+    ).fetchall()
+
+    results = []
+    for row in rows:
+        if int(row["face_id"]) == face_id:
+            continue
+        image = _row_to_indexed_image(row)
+        if not image.path.exists():
+            continue
+        results.append(
+            FaceSearchResult(
+                face=_row_to_indexed_face(row, image),
+                score=float(row["score"]),
+            )
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
 def delete_missing_paths(
     conn: sqlite3.Connection,
     seen_paths: Iterable[Path],
@@ -587,6 +665,24 @@ def _row_to_indexed_image(row: sqlite3.Row) -> IndexedImage:
         modified_at=float(row["modified_at"]),
         embedding_model=str(row["embedding_model"]),
         thumbnail_path=_normalize_thumbnail_path(row["thumbnail_path"]),
+    )
+
+
+def _row_to_indexed_face(row: sqlite3.Row, image: IndexedImage) -> IndexedFace:
+    return IndexedFace(
+        id=int(row["face_id"]),
+        image=image,
+        box=FaceBox(
+            x=float(row["x"]),
+            y=float(row["y"]),
+            width=float(row["width"]),
+            height=float(row["height"]),
+            detection_score=(
+                None if row["detection_score"] is None else float(row["detection_score"])
+            ),
+            id=int(row["face_id"]),
+        ),
+        embedding_model=str(row["face_embedding_model"]),
     )
 
 

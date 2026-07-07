@@ -12,9 +12,10 @@ from local_image_search.db import (
     count_images,
     count_searchable_images,
     search_indexed_images,
+    search_similar_faces,
 )
 from local_image_search.metrics import memory_status
-from local_image_search.models import SearchResult
+from local_image_search.models import FaceSearchResult, SearchResult
 
 
 class SearchService:
@@ -90,6 +91,18 @@ class SearchService:
             "results": _serialize_results(results),
         }
 
+    def similar_face(self, face_id: int, limit: int) -> dict:
+        started = time.perf_counter()
+        with connect_readonly(self.db_path) as conn:
+            results = search_similar_faces(conn, face_id, limit)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        return {
+            "faceId": face_id,
+            "limit": limit,
+            "elapsedMs": round(elapsed_ms, 3),
+            "results": _serialize_face_results(results),
+        }
+
 
 def _serialize_results(results: list[SearchResult]) -> list[dict]:
     return [
@@ -102,6 +115,36 @@ def _serialize_results(results: list[SearchResult]) -> list[dict]:
             "thumbnailPath": (
                 str(result.image.thumbnail_path) if result.image.thumbnail_path else None
             ),
+        }
+        for result in results
+    ]
+
+
+def _serialize_face_results(results: list[FaceSearchResult]) -> list[dict]:
+    return [
+        {
+            "faceId": result.face.id,
+            "imageId": result.face.image.id,
+            "path": str(result.face.image.path),
+            "fileName": result.face.image.file_name,
+            "score": round(result.score, 6),
+            "faceEmbeddingModel": result.face.embedding_model,
+            "thumbnailPath": (
+                str(result.face.image.thumbnail_path)
+                if result.face.image.thumbnail_path
+                else None
+            ),
+            "box": {
+                "x": round(result.face.box.x, 3),
+                "y": round(result.face.box.y, 3),
+                "width": round(result.face.box.width, 3),
+                "height": round(result.face.box.height, 3),
+                "detectionScore": (
+                    None
+                    if result.face.box.detection_score is None
+                    else round(result.face.box.detection_score, 6)
+                ),
+            },
         }
         for result in results
     ]

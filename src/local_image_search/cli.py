@@ -10,10 +10,12 @@ from local_image_search.clip import make_clip_embedder
 from local_image_search.config import DEFAULT_DB_PATH
 from local_image_search.db import (
     connect,
+    connect_readonly,
     count_face_embeddings,
     count_faces,
     count_images,
     init_db,
+    search_similar_faces,
 )
 from local_image_search.face_detection import DEFAULT_FACE_DETECTOR, make_face_detector
 from local_image_search.face_review import write_face_review
@@ -88,6 +90,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["stub", "open-clip", "openclip", "clip"],
     )
     similar_parser.set_defaults(handler=handle_similar)
+
+    similar_face_parser = subparsers.add_parser(
+        "similar-face",
+        help="Find indexed faces visually similar to a stored face",
+    )
+    similar_face_parser.add_argument("face_id", type=int, help="Stored face id")
+    similar_face_parser.add_argument("--limit", type=int, default=10)
+    similar_face_parser.set_defaults(handler=handle_similar_face)
 
     serve_parser = subparsers.add_parser("serve", help="Run the local search API")
     serve_parser.add_argument("--host", default="127.0.0.1")
@@ -218,6 +228,23 @@ def handle_similar(args: argparse.Namespace) -> int:
     clip_embedder = make_clip_embedder(args.clip_embedder)
     response = SearchService(args.db, clip_embedder).similar(args.image, args.limit)
     return _print_results(response["results"])
+
+
+def handle_similar_face(args: argparse.Namespace) -> int:
+    with connect_readonly(args.db) as conn:
+        results = search_similar_faces(conn, args.face_id, args.limit)
+
+    if not results:
+        print("no results")
+        return 0
+
+    for result in results:
+        box = result.face.box
+        print(
+            f"{result.score:.3f}  face#{result.face.id}  {result.face.image.path}  "
+            f"box=({box.x:.0f},{box.y:.0f},{box.width:.0f},{box.height:.0f})"
+        )
+    return 0
 
 
 def _print_results(results: list[dict]) -> int:

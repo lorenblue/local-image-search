@@ -51,6 +51,7 @@ def _load_review_items(
                images.file_size,
                images.created_at,
                images.modified_at,
+               faces.id AS face_id,
                faces.x,
                faces.y,
                faces.width,
@@ -114,6 +115,7 @@ def _load_review_items(
                 detection_score=(
                     None if row["detection_score"] is None else float(row["detection_score"])
                 ),
+                id=int(row["face_id"]),
             )
         )
         if row["detection_model"]:
@@ -216,6 +218,18 @@ def _render_html(items: list[FaceReviewItem], detection_model_label: str) -> str
       box-sizing: border-box;
       box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
     }}
+    .face-id {{
+      position: absolute;
+      left: 0;
+      top: 0;
+      padding: 2px 5px;
+      border-radius: 4px;
+      background: #ff3b30;
+      color: white;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.2;
+    }}
     .meta {{
       padding: 10px 12px;
       font-size: 13px;
@@ -263,10 +277,11 @@ def _render_face_box(face: FaceBox, image_width: int, image_height: int) -> str:
     top = face.y / image_height * 100
     width = face.width / image_width * 100
     height = face.height / image_height * 100
+    label = f'<span class="face-id">#{face.id}</span>' if face.id is not None else ""
     return (
         '<div class="face" '
         f'style="left:{left:.3f}%;top:{top:.3f}%;'
-        f'width:{width:.3f}%;height:{height:.3f}%"></div>'
+        f'width:{width:.3f}%;height:{height:.3f}%">{label}</div>'
     )
 
 
