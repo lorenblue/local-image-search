@@ -296,6 +296,57 @@ def test_search_similar_faces_returns_nearest_face_vectors(tmp_path: Path) -> No
         assert results[0].score > results[1].score
 
 
+def test_search_similar_faces_returns_one_best_match_per_image(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    source_path = tmp_path / "source.jpg"
+    near_path = tmp_path / "near.jpg"
+    far_path = tmp_path / "far.jpg"
+    for path in [source_path, near_path, far_path]:
+        path.write_bytes(b"test image placeholder")
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn)
+        source_image_id = _insert_indexed_image(conn, source_path)
+        near_image_id = _insert_indexed_image(conn, near_path)
+        far_image_id = _insert_indexed_image(conn, far_path)
+        upsert_faces_for_image(
+            conn,
+            source_image_id,
+            "test-face",
+            [
+                FaceBox(1, 2, 3, 4, 0.99, embedding=[1.0] + [0.0] * 511),
+                FaceBox(2, 3, 4, 5, 0.98, embedding=_normalize([0.99, 0.01] + [0.0] * 510)),
+            ],
+        )
+        upsert_faces_for_image(
+            conn,
+            near_image_id,
+            "test-face",
+            [
+                FaceBox(5, 6, 7, 8, 0.97, embedding=_normalize([0.90, 0.10] + [0.0] * 510)),
+                FaceBox(6, 7, 8, 9, 0.96, embedding=_normalize([0.80, 0.20] + [0.0] * 510)),
+            ],
+        )
+        upsert_faces_for_image(
+            conn,
+            far_image_id,
+            "test-face",
+            [FaceBox(9, 10, 11, 12, 0.95, embedding=[0.0, 1.0] + [0.0] * 510)],
+        )
+        conn.commit()
+
+        source_face_id = conn.execute(
+            "SELECT id FROM faces WHERE image_id = ? ORDER BY id LIMIT 1",
+            (source_image_id,),
+        ).fetchone()["id"]
+
+        results = search_similar_faces(conn, source_face_id, limit=3)
+
+        assert [result.face.image.path for result in results] == [near_path, far_path]
+        assert len({result.face.image.id for result in results}) == len(results)
+
+
 def test_get_primary_face_for_image_uses_largest_indexed_face(tmp_path: Path) -> None:
     db_path = tmp_path / "images.db"
     image_path = tmp_path / "group.jpg"

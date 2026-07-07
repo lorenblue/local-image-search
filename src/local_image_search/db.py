@@ -438,7 +438,9 @@ def search_similar_faces(
 
     source = conn.execute(
         f"""
-        SELECT faces.embedding_model, {FACE_VECTOR_TABLE_NAME}.embedding
+        SELECT faces.image_id,
+               faces.embedding_model,
+               {FACE_VECTOR_TABLE_NAME}.embedding
         FROM faces
         JOIN {FACE_VECTOR_TABLE_NAME} ON {FACE_VECTOR_TABLE_NAME}.rowid = faces.id
         WHERE faces.id = ?
@@ -480,12 +482,16 @@ def search_similar_faces(
     ).fetchall()
 
     results = []
+    seen_image_ids = {int(source["image_id"])}
     for row in rows:
         if int(row["face_id"]) == face_id:
             continue
         image = _row_to_indexed_image(row)
+        if image.id in seen_image_ids:
+            continue
         if not image.path.exists():
             continue
+        seen_image_ids.add(image.id)
         results.append(
             FaceSearchResult(
                 face=_row_to_indexed_face(row, image),
