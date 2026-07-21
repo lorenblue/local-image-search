@@ -16,8 +16,8 @@ cloud service.
 - Incremental indexing based on path, size, modified time, and model name
 - Automatic pruning of deleted files under scanned folders
 - FastAPI API with Scalar docs
-- Raycast UI with thumbnail results, paste/copy/open actions, Quick Look, and
-  visual similarity search
+- Raycast UI with thumbnail results, paste/copy/open actions, batch paste,
+  Quick Look, and visual similarity search
 
 ## Privacy Model
 
@@ -81,6 +81,19 @@ for example:
 When the command opens, it starts the local API if needed and syncs those
 folders in the background. Search still works while indexing is running.
 
+Useful Raycast actions:
+
+```text
+Enter          Paste the selected image
+Option+Enter   Add or remove the image from the batch paste selection
+Cmd+Shift+V    Paste all selected images into the previous app
+Cmd+Enter      Copy the selected image
+```
+
+Batch paste writes the selected image files to the macOS pasteboard, closes
+Raycast, and sends a normal paste command to the previous app. Some apps accept
+multiple pasted image files better than others.
+
 ## CLI
 
 The CLI is still useful for manual indexing and debugging:
@@ -105,6 +118,20 @@ Open the local API reference at:
 
 ```text
 http://127.0.0.1:8766/scalar
+```
+
+## Troubleshooting
+
+If a folder appears in Raycast preferences but its images do not show up in the
+index, macOS privacy permissions may be blocking the background server. Grant
+Full Disk Access to Raycast, then restart the local server by quitting the old
+process or rebooting Raycast.
+
+If the server is started through Homebrew Python, macOS may also require Full
+Disk Access for Python.app. For example:
+
+```text
+/opt/homebrew/opt/python@3.13/Frameworks/Python.framework/Versions/3.13/Resources/Python.app
 ```
 
 ## Configuration

@@ -6,11 +6,14 @@ import {
   Grid,
   Icon,
   Toast,
+  closeMainWindow,
   getPreferenceValues,
   open,
   showToast,
 } from "@raycast/api";
+import { execFile } from "child_process";
 import { useEffect, useMemo, useState } from "react";
+import { promisify } from "util";
 
 import { ensureServerRunning } from "./server";
 
@@ -109,6 +112,7 @@ type IndexingStatus = {
 
 const DEFAULT_LIMIT = 30;
 const STATUS_POLL_MS = 2000;
+const execFileAsync = promisify(execFile);
 
 export default function Command() {
   const preferences = getPreferenceValues<Preferences>();
@@ -122,6 +126,11 @@ export default function Command() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [pasteSelection, setPasteSelection] = useState<string[]>([]);
+  const pasteSelectionSet = useMemo(
+    () => new Set(pasteSelection),
+    [pasteSelection],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -247,6 +256,15 @@ export default function Command() {
     }
     return "Search indexed images";
   }, [similarSource, status]);
+  const baseNavigationTitle = navigationTitle(
+    query,
+    similarSource,
+    similarFaceSource,
+  );
+  const gridNavigationTitle =
+    pasteSelection.length > 0
+      ? `${baseNavigationTitle} · ${pasteSelection.length} selected`
+      : baseNavigationTitle;
 
   if (error) {
     return <ServerError apiBaseUrl={apiBaseUrl} message={error} />;
@@ -283,11 +301,45 @@ export default function Command() {
   }
 
   function handleResultTrashed(path: string) {
+    setPasteSelection((currentSelection) =>
+      currentSelection.filter((selectedPath) => selectedPath !== path),
+    );
     setResults((currentResults) => {
       const nextResults = currentResults.filter((result) => result.path !== path);
       setSelectedItemId(resultItemId(nextResults[0]));
       return nextResults;
     });
+  }
+
+  function handleTogglePasteSelection(path: string) {
+    setPasteSelection((currentSelection) => {
+      if (currentSelection.includes(path)) {
+        return currentSelection.filter((selectedPath) => selectedPath !== path);
+      }
+      return [...currentSelection, path];
+    });
+  }
+
+  async function handlePasteSelection(paths = pasteSelection) {
+    if (paths.length === 0) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "No Images Selected",
+        message: "Add images to the paste selection first.",
+      });
+      return;
+    }
+
+    try {
+      await pasteFiles(paths);
+      setPasteSelection([]);
+    } catch (unknownError) {
+      await showToast({
+        style: Toast.Style.Failure,
+        title: "Paste Failed",
+        message: errorMessage(unknownError),
+      });
+    }
   }
 
   return (
@@ -296,13 +348,7 @@ export default function Command() {
       fit={Grid.Fit.Fill}
       inset={Grid.Inset.Small}
       isLoading={isLoading}
-      navigationTitle={
-        query.trim() || (!similarSource && !similarFaceSource)
-          ? "Search Images"
-          : similarFaceSource
-            ? "Similar Faces"
-            : "Similar Images"
-      }
+      navigationTitle={gridNavigationTitle}
       onSearchTextChange={handleSearchTextChange}
       onSelectionChange={(id) => setSelectedItemId(id ?? undefined)}
       searchBarPlaceholder={searchBarPlaceholder}
@@ -323,7 +369,11 @@ export default function Command() {
             setQuery("");
           }}
           onFindSimilarFace={() => handleFindSimilarFace(result)}
+          onPasteSelection={() => handlePasteSelection()}
+          onTogglePasteSelection={() => handleTogglePasteSelection(result.path)}
           onTrash={() => handleResultTrashed(result.path)}
+          pasteSelectionCount={pasteSelection.length}
+          isSelectedForPaste={pasteSelectionSet.has(result.path)}
         />
       ))}
     </Grid>
@@ -364,16 +414,27 @@ function ResultItem({
   result,
   onFindSimilar,
   onFindSimilarFace,
+  onPasteSelection,
+  onTogglePasteSelection,
   onTrash,
+  pasteSelectionCount,
+  isSelectedForPaste,
 }: {
   result: SearchResult;
   onFindSimilar: () => void;
   onFindSimilarFace: () => void;
+  onPasteSelection: () => void;
+  onTogglePasteSelection: () => void;
   onTrash: () => void;
+  pasteSelectionCount: number;
+  isSelectedForPaste: boolean;
 }) {
   const content = result.thumbnailPath
     ? { source: result.thumbnailPath }
     : { source: Icon.Image, tintColor: Color.SecondaryText };
+  const pasteSelectionTitle = isSelectedForPaste
+    ? "Remove from Paste Selection"
+    : "Add to Paste Selection";
 
   return (
     <Grid.Item
@@ -381,6 +442,11 @@ function ResultItem({
       title={result.fileName}
       subtitle={scoreLabel(result.score)}
       content={content}
+      accessory={
+        isSelectedForPaste
+          ? { icon: Icon.CheckCircle, tooltip: "Selected for batch paste" }
+          : undefined
+      }
       quickLook={{ name: result.fileName, path: result.path }}
       actions={
         <ActionPanel>
@@ -392,13 +458,31 @@ function ResultItem({
               shortcut={{ modifiers: ["cmd"], key: "enter" }}
             />
             <Action
+              title={pasteSelectionTitle}
+              icon={isSelectedForPaste ? Icon.MinusCircle : Icon.PlusCircle}
+              shortcut={{ modifiers: ["opt"], key: "enter" }}
+              onAction={onTogglePasteSelection}
+            />
+            {pasteSelectionCount > 0 ? (
+              <Action
+                title={`Paste ${pasteSelectionCount} Selected ${pluralizeImage(pasteSelectionCount)}`}
+                icon={Icon.Clipboard}
+                shortcut={{ modifiers: ["cmd", "shift"], key: "v" }}
+                onAction={onPasteSelection}
+              />
+            ) : null}
+            <Action
               title="Open Image"
               icon={Icon.Image}
               onAction={() => open(result.path)}
             />
             <Action.ToggleQuickLook />
             <Action.ShowInFinder path={result.path} />
-            <Action.Trash paths={result.path} onTrash={onTrash} />
+            <Action.Trash
+              paths={result.path}
+              onTrash={onTrash}
+              shortcut={{ modifiers: ["cmd"], key: "d" }}
+            />
           </ActionPanel.Section>
           <ActionPanel.Section>
             <Action
@@ -475,6 +559,61 @@ function normalizeBaseUrl(value: string): string {
 
 function scoreLabel(score: number): string {
   return score.toFixed(3);
+}
+
+function navigationTitle(
+  query: string,
+  similarSource: SearchResult | null,
+  similarFaceSource: SearchResult | null,
+): string {
+  if (query.trim() || (!similarSource && !similarFaceSource)) {
+    return "Search Images";
+  }
+  return similarFaceSource ? "Similar Faces" : "Similar Images";
+}
+
+async function pasteFiles(paths: string[]) {
+  await setPasteboardFiles(paths);
+  await closeMainWindow({ clearRootSearch: false });
+  await delay(150);
+  await execFileAsync("/usr/bin/osascript", [
+    "-e",
+    'tell application "System Events" to keystroke "v" using command down',
+  ]);
+}
+
+async function setPasteboardFiles(paths: string[]) {
+  const script = `
+import AppKit
+
+let urls = CommandLine.arguments.dropFirst().map { path in
+  NSURL(fileURLWithPath: path)
+}
+
+let pasteboard = NSPasteboard.general
+pasteboard.clearContents()
+
+if !pasteboard.writeObjects(urls) {
+  fputs("Could not write files to the pasteboard.\\n", stderr)
+  exit(1)
+}
+`;
+
+  await execFileAsync("/usr/bin/swift", [
+    "-module-cache-path",
+    "/tmp/local-image-search-swift-cache",
+    "-e",
+    script,
+    ...paths,
+  ]);
+}
+
+function delay(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function pluralizeImage(count: number): string {
+  return count === 1 ? "Image" : "Images";
 }
 
 function resultItemId(result: SearchResult | undefined): string | undefined {
