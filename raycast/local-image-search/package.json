@@ -6,6 +6,9 @@
   "icon": "icon.png",
   "author": "lorenzo",
   "license": "MIT",
+  "platforms": [
+    "macOS"
+  ],
   "commands": [
     {
       "name": "search-images",
