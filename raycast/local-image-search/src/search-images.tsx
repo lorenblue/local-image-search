@@ -133,6 +133,7 @@ export default function Command() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [pasteSelection, setPasteSelection] = useState<string[]>([]);
   const pasteSelectionSet = useMemo(
     () => new Set(pasteSelection),
@@ -273,10 +274,15 @@ export default function Command() {
     similarSource,
     similarFaceSource,
   );
-  const gridNavigationTitle =
+  const gridNavigationTitle = [
+    baseNavigationTitle,
+    multiSelectMode ? "Multi-select mode" : null,
     pasteSelection.length > 0
-      ? `${baseNavigationTitle} · ${pasteSelection.length} selected`
-      : baseNavigationTitle;
+      ? `${pasteSelection.length} selected`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   if (error) {
     return <ServerError apiBaseUrl={apiBaseUrl} message={error} />;
@@ -312,15 +318,29 @@ export default function Command() {
     }
   }
 
-  function handleResultTrashed(path: string) {
-    setPasteSelection((currentSelection) =>
-      currentSelection.filter((selectedPath) => selectedPath !== path),
+  function handleResultsTrashed(paths: string[]) {
+    const trashedPaths = new Set(paths);
+    const selectedIndex = results.findIndex(
+      (result) => resultItemId(result) === selectedItemId,
     );
-    setResults((currentResults) => {
-      const nextResults = currentResults.filter((result) => result.path !== path);
-      setSelectedItemId(resultItemId(nextResults[0]));
-      return nextResults;
-    });
+    const selectedResultWasTrashed =
+      selectedIndex >= 0 && trashedPaths.has(results[selectedIndex].path);
+    const nextResults = results.filter((result) => !trashedPaths.has(result.path));
+    const nextSelection = selectedResultWasTrashed
+      ? results
+          .slice(selectedIndex + 1)
+          .find((result) => !trashedPaths.has(result.path)) ??
+        results
+          .slice(0, selectedIndex)
+          .reverse()
+          .find((result) => !trashedPaths.has(result.path))
+      : nextResults.find((result) => resultItemId(result) === selectedItemId);
+
+    setPasteSelection((currentSelection) =>
+      currentSelection.filter((selectedPath) => !trashedPaths.has(selectedPath)),
+    );
+    setResults(nextResults);
+    setSelectedItemId(resultItemId(nextSelection));
   }
 
   function handleTogglePasteSelection(path: string) {
@@ -383,8 +403,14 @@ export default function Command() {
           onFindSimilarFace={() => handleFindSimilarFace(result)}
           onPasteSelection={() => handlePasteSelection()}
           onTogglePasteSelection={() => handleTogglePasteSelection(result.path)}
-          onTrash={() => handleResultTrashed(result.path)}
+          onToggleMultiSelectMode={() =>
+            setMultiSelectMode((currentMode) => !currentMode)
+          }
+          onTrash={() => handleResultsTrashed([result.path])}
+          onTrashSelection={() => handleResultsTrashed(pasteSelection)}
+          multiSelectMode={multiSelectMode}
           pasteSelectionCount={pasteSelection.length}
+          selectedPaths={pasteSelection}
           isSelectedForPaste={pasteSelectionSet.has(result.path)}
         />
       ))}
@@ -432,8 +458,12 @@ function ResultItem({
   onFindSimilarFace,
   onPasteSelection,
   onTogglePasteSelection,
+  onToggleMultiSelectMode,
   onTrash,
+  onTrashSelection,
+  multiSelectMode,
   pasteSelectionCount,
+  selectedPaths,
   isSelectedForPaste,
 }: {
   result: SearchResult;
@@ -441,16 +471,23 @@ function ResultItem({
   onFindSimilarFace: () => void;
   onPasteSelection: () => void;
   onTogglePasteSelection: () => void;
+  onToggleMultiSelectMode: () => void;
   onTrash: () => void;
+  onTrashSelection: () => void;
+  multiSelectMode: boolean;
   pasteSelectionCount: number;
+  selectedPaths: string[];
   isSelectedForPaste: boolean;
 }) {
   const content = result.thumbnailPath
     ? { source: result.thumbnailPath }
     : { source: Icon.Image, tintColor: Color.SecondaryText };
   const pasteSelectionTitle = isSelectedForPaste
-    ? "Remove from Paste Selection"
-    : "Add to Paste Selection";
+    ? "Remove from Selection"
+    : "Add to Selection";
+  const multiSelectModeTitle = multiSelectMode
+    ? "Exit Multi-Select Mode"
+    : "Enter Multi-Select Mode";
 
   return (
     <Grid.Item
@@ -467,6 +504,21 @@ function ResultItem({
       actions={
         <ActionPanel>
           <ActionPanel.Section>
+            {multiSelectMode ? (
+              <>
+                <Action
+                  title={pasteSelectionTitle}
+                  icon={isSelectedForPaste ? Icon.MinusCircle : Icon.PlusCircle}
+                  onAction={onTogglePasteSelection}
+                />
+                <Action
+                  title={`${pasteSelectionTitle} (Space)`}
+                  icon={isSelectedForPaste ? Icon.MinusCircle : Icon.PlusCircle}
+                  shortcut={{ modifiers: [], key: "space" }}
+                  onAction={onTogglePasteSelection}
+                />
+              </>
+            ) : null}
             <Action.Paste title="Paste Image" content={{ file: result.path }} />
             <Action.CopyToClipboard
               title="Copy Image"
@@ -474,10 +526,10 @@ function ResultItem({
               shortcut={{ modifiers: ["cmd"], key: "enter" }}
             />
             <Action
-              title={pasteSelectionTitle}
-              icon={isSelectedForPaste ? Icon.MinusCircle : Icon.PlusCircle}
+              title={multiSelectModeTitle}
+              icon={multiSelectMode ? Icon.CheckCircle : Icon.PlusCircle}
               shortcut={{ modifiers: ["opt"], key: "enter" }}
-              onAction={onTogglePasteSelection}
+              onAction={onToggleMultiSelectMode}
             />
             {pasteSelectionCount > 0 ? (
               <Action
@@ -494,6 +546,14 @@ function ResultItem({
             />
             <Action.ToggleQuickLook />
             <Action.ShowInFinder path={result.path} />
+            {selectedPaths.length > 1 ? (
+              <Action.Trash
+                title={`Trash ${selectedPaths.length} Selected ${pluralizeImage(selectedPaths.length)}`}
+                paths={selectedPaths}
+                onTrash={onTrashSelection}
+                shortcut={{ modifiers: ["cmd", "shift"], key: "d" }}
+              />
+            ) : null}
             <Action.Trash
               paths={result.path}
               onTrash={onTrash}
