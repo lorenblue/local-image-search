@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from local_image_search.models import (
@@ -16,30 +17,48 @@ from local_image_search.models import (
 
 SQLITE_TIMEOUT_SECONDS = 30
 VECTOR_TABLE_NAME = "image_embeddings"
-VECTOR_DIMENSIONS = 512
+DEFAULT_VECTOR_DIMENSIONS = 512
 FACE_VECTOR_TABLE_NAME = "face_embeddings"
 FACE_VECTOR_DIMENSIONS = 512
 SEARCH_OVERFETCH_MULTIPLIER = 5
+IMAGE_VECTOR_DIMENSIONS_KEY = "image_vector_dimensions"
 
 
-def connect(db_path: Path) -> sqlite3.Connection:
+@contextmanager
+def connect(db_path: Path) -> Iterator[sqlite3.Connection]:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=SQLITE_TIMEOUT_SECONDS)
-    conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA busy_timeout={SQLITE_TIMEOUT_SECONDS * 1000}")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    load_sqlite_vec(conn)
-    return conn
+    conn = _open_connection(db_path)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
-def connect_readonly(db_path: Path) -> sqlite3.Connection:
+@contextmanager
+def connect_readonly(db_path: Path) -> Iterator[sqlite3.Connection]:
     if not db_path.exists():
         raise FileNotFoundError(f"Database does not exist: {db_path}")
     uri = f"file:{db_path.resolve()}?mode=ro"
     conn = sqlite3.connect(uri, uri=True, timeout=SQLITE_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row
     conn.execute(f"PRAGMA busy_timeout={SQLITE_TIMEOUT_SECONDS * 1000}")
+    load_sqlite_vec(conn)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _open_connection(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, timeout=SQLITE_TIMEOUT_SECONDS)
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_TIMEOUT_SECONDS * 1000}")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
     load_sqlite_vec(conn)
     return conn
 
@@ -71,6 +90,25 @@ def init_db(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_images_path ON images(path);
         CREATE INDEX IF NOT EXISTS idx_images_modified_at ON images(modified_at);
+
+        CREATE TABLE IF NOT EXISTS image_embedding_entries (
+            id INTEGER PRIMARY KEY,
+            image_id INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+            embedding_model TEXT NOT NULL,
+            dimensions INTEGER NOT NULL,
+            indexed_at REAL NOT NULL DEFAULT 0,
+            UNIQUE(image_id, embedding_model)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_image_embedding_entries_image_id
+            ON image_embedding_entries(image_id);
+        CREATE INDEX IF NOT EXISTS idx_image_embedding_entries_model
+            ON image_embedding_entries(embedding_model);
+
+        CREATE TABLE IF NOT EXISTS app_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS face_clusters (
             id INTEGER PRIMARY KEY,
@@ -118,13 +156,42 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def ensure_vector_table(conn: sqlite3.Connection) -> None:
+def ensure_vector_table(
+    conn: sqlite3.Connection,
+    dimensions: int = DEFAULT_VECTOR_DIMENSIONS,
+) -> None:
+    if dimensions <= 0:
+        raise ValueError(f"Embedding dimensions must be positive, got {dimensions}")
+
+    _ensure_metadata_table(conn)
+    if vector_table_exists(conn):
+        current_dimensions = get_vector_dimensions(conn)
+        if current_dimensions == dimensions:
+            return
+        if current_dimensions is None:
+            current_dimensions = DEFAULT_VECTOR_DIMENSIONS
+        if current_dimensions == dimensions:
+            _set_metadata(conn, IMAGE_VECTOR_DIMENSIONS_KEY, str(dimensions))
+            return
+
+        conn.execute(f"DROP TABLE IF EXISTS {VECTOR_TABLE_NAME}")
+        if _table_exists(conn, "image_embedding_entries"):
+            conn.execute("DELETE FROM image_embedding_entries")
+        conn.execute(
+            """
+            UPDATE images
+            SET embedding_model = '',
+                indexed_at = 0
+            """
+        )
+
     conn.execute(
         f"""
         CREATE VIRTUAL TABLE IF NOT EXISTS {VECTOR_TABLE_NAME}
-        USING vec0(embedding float[{VECTOR_DIMENSIONS}])
+        USING vec0(embedding float[{dimensions}])
         """
     )
+    _set_metadata(conn, IMAGE_VECTOR_DIMENSIONS_KEY, str(dimensions))
 
 
 def ensure_face_vector_table(conn: sqlite3.Connection) -> None:
@@ -140,12 +207,11 @@ def needs_indexing(
     conn: sqlite3.Connection,
     image: ImageFile,
     embedding_model: str,
+    dimensions: int = DEFAULT_VECTOR_DIMENSIONS,
 ) -> bool:
-    vector_exists_sql = _vector_exists_sql(conn)
     row = conn.execute(
-        f"""
-        SELECT file_size, modified_at, embedding_model,
-               {vector_exists_sql} AS has_embedding
+        """
+        SELECT id, file_size, modified_at
         FROM images
         WHERE path = ?
         """,
@@ -156,8 +222,12 @@ def needs_indexing(
     return (
         row["file_size"] != image.file_size
         or row["modified_at"] != image.modified_at
-        or row["embedding_model"] != embedding_model
-        or not row["has_embedding"]
+        or not _has_image_embedding(
+            conn,
+            int(row["id"]),
+            embedding_model,
+            dimensions,
+        )
     )
 
 
@@ -215,6 +285,29 @@ def _has_stale_face_embeddings(
     return int(row["count"]) > 0
 
 
+def _has_image_embedding(
+    conn: sqlite3.Connection,
+    image_id: int,
+    embedding_model: str,
+    dimensions: int,
+) -> bool:
+    if not vector_table_exists(conn):
+        return False
+    row = conn.execute(
+        f"""
+        SELECT 1
+        FROM image_embedding_entries
+        JOIN {VECTOR_TABLE_NAME}
+          ON {VECTOR_TABLE_NAME}.rowid = image_embedding_entries.id
+        WHERE image_embedding_entries.image_id = ?
+          AND image_embedding_entries.embedding_model = ?
+          AND image_embedding_entries.dimensions = ?
+        """,
+        (image_id, embedding_model, dimensions),
+    ).fetchone()
+    return row is not None
+
+
 def upsert_indexed_image(
     conn: sqlite3.Connection,
     image: ImageFile,
@@ -222,7 +315,22 @@ def upsert_indexed_image(
     embedding: list[float],
     thumbnail_path: Path | None,
 ) -> int:
-    _validate_embedding_dimensions(embedding)
+    ensure_vector_table(conn, len(embedding))
+    _validate_embedding_dimensions(embedding, len(embedding))
+    existing_image = conn.execute(
+        """
+        SELECT file_size, modified_at
+        FROM images
+        WHERE path = ?
+        """,
+        (str(image.path),),
+    ).fetchone()
+    image_changed = (
+        existing_image is None
+        or existing_image["file_size"] != image.file_size
+        or existing_image["modified_at"] != image.modified_at
+    )
+    indexed_at = time.time()
     conn.execute(
         """
         INSERT INTO images (
@@ -253,19 +361,43 @@ def upsert_indexed_image(
             image.modified_at,
             embedding_model,
             str(thumbnail_path.resolve()) if thumbnail_path else None,
-            time.time(),
+            indexed_at,
         ),
     )
     image_id = get_image_id(conn, image.path)
+    if image_changed:
+        if vector_table_exists(conn):
+            _delete_image_embedding_vectors(conn, image_id)
+        conn.execute(
+            "DELETE FROM image_embedding_entries WHERE image_id = ?",
+            (image_id,),
+        )
+    conn.execute(
+        """
+        INSERT INTO image_embedding_entries (
+            image_id,
+            embedding_model,
+            dimensions,
+            indexed_at
+        )
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(image_id, embedding_model) DO UPDATE SET
+            dimensions = excluded.dimensions,
+            indexed_at = excluded.indexed_at
+        """,
+        (image_id, embedding_model, len(embedding), indexed_at),
+    )
+    embedding_entry_id = _get_image_embedding_entry_id(conn, image_id, embedding_model)
     conn.execute(
         f"DELETE FROM {VECTOR_TABLE_NAME} WHERE rowid = ?",
-        (image_id,),
+        (embedding_entry_id,),
     )
     conn.execute(
         f"INSERT INTO {VECTOR_TABLE_NAME} (rowid, embedding) VALUES (?, ?)",
-        (image_id, serialize_embedding(embedding)),
+        (embedding_entry_id, serialize_embedding(embedding)),
     )
-    reset_faces_for_image(conn, image_id)
+    if image_changed:
+        reset_faces_for_image(conn, image_id)
     return image_id
 
 
@@ -312,7 +444,7 @@ def upsert_faces_for_image(
             ),
         )
         if face.embedding is not None:
-            _validate_embedding_dimensions(face.embedding)
+            _validate_embedding_dimensions(face.embedding, FACE_VECTOR_DIMENSIONS)
             conn.execute(
                 f"INSERT INTO {FACE_VECTOR_TABLE_NAME} (rowid, embedding) VALUES (?, ?)",
                 (cursor.lastrowid, serialize_embedding(face.embedding)),
@@ -383,26 +515,31 @@ def search_indexed_images(
     limit: int,
     exclude_path: Path | None = None,
 ) -> list[SearchResult]:
-    _validate_embedding_dimensions(query_embedding)
     if limit <= 0:
         return []
     if not vector_table_exists(conn):
         return []
+    dimensions = get_vector_dimensions(conn)
+    if dimensions is None:
+        return []
+    _validate_embedding_dimensions(query_embedding, dimensions)
     search_limit = limit * SEARCH_OVERFETCH_MULTIPLIER
     if exclude_path:
         search_limit += 1
     rows = conn.execute(
         f"""
         SELECT images.id, images.path, images.file_name, images.file_size,
-               images.created_at, images.modified_at, images.embedding_model,
+               images.created_at, images.modified_at,
+               image_embedding_entries.embedding_model AS embedding_model,
                images.thumbnail_path,
                matches.distance,
                (1.0 - ((matches.distance * matches.distance) / 2.0)) AS score
         FROM {VECTOR_TABLE_NAME} AS matches
-        JOIN images ON images.id = matches.rowid
+        JOIN image_embedding_entries ON image_embedding_entries.id = matches.rowid
+        JOIN images ON images.id = image_embedding_entries.image_id
         WHERE matches.embedding MATCH ?
           AND matches.k = ?
-          AND images.embedding_model = ?
+          AND image_embedding_entries.embedding_model = ?
         ORDER BY matches.distance
         """,
         (serialize_embedding(query_embedding), search_limit, embedding_model),
@@ -560,10 +697,11 @@ def delete_missing_paths(
         if image_path in seen or not _path_is_in_scan_scope(image_path, scopes):
             continue
         if vector_table_exists(conn):
-            conn.execute(
-                f"DELETE FROM {VECTOR_TABLE_NAME} WHERE rowid = ?",
-                (row["id"],),
-            )
+            _delete_image_embedding_vectors(conn, int(row["id"]))
+        conn.execute(
+            "DELETE FROM image_embedding_entries WHERE image_id = ?",
+            (row["id"],),
+        )
         delete_faces_for_image(conn, int(row["id"]))
         conn.execute("DELETE FROM images WHERE id = ?", (row["id"],))
         deleted += 1
@@ -614,13 +752,50 @@ def count_searchable_images(
     row = conn.execute(
         f"""
         SELECT COUNT(*) AS count
-        FROM {VECTOR_TABLE_NAME}
-        JOIN images ON images.id = {VECTOR_TABLE_NAME}.rowid
-        WHERE images.embedding_model = ?
+        FROM image_embedding_entries
+        JOIN {VECTOR_TABLE_NAME}
+          ON {VECTOR_TABLE_NAME}.rowid = image_embedding_entries.id
+        WHERE image_embedding_entries.embedding_model = ?
         """,
         (embedding_model,),
     ).fetchone()
     return int(row["count"])
+
+
+def _get_image_embedding_entry_id(
+    conn: sqlite3.Connection,
+    image_id: int,
+    embedding_model: str,
+) -> int:
+    row = conn.execute(
+        """
+        SELECT id
+        FROM image_embedding_entries
+        WHERE image_id = ?
+          AND embedding_model = ?
+        """,
+        (image_id, embedding_model),
+    ).fetchone()
+    if row is None:
+        raise ValueError(
+            f"Image embedding entry was not found after upsert: {image_id} {embedding_model}"
+        )
+    return int(row["id"])
+
+
+def _delete_image_embedding_vectors(conn: sqlite3.Connection, image_id: int) -> None:
+    embedding_entry_ids = [
+        int(row["id"])
+        for row in conn.execute(
+            "SELECT id FROM image_embedding_entries WHERE image_id = ?",
+            (image_id,),
+        ).fetchall()
+    ]
+    if embedding_entry_ids:
+        conn.executemany(
+            f"DELETE FROM {VECTOR_TABLE_NAME} WHERE rowid = ?",
+            [(entry_id,) for entry_id in embedding_entry_ids],
+        )
 
 
 def index_version(conn: sqlite3.Connection) -> tuple[int, float]:
@@ -628,9 +803,11 @@ def index_version(conn: sqlite3.Connection) -> tuple[int, float]:
         return 0, 0
     row = conn.execute(
         f"""
-        SELECT COUNT(*) AS count, COALESCE(MAX(indexed_at), 0) AS latest_indexed_at
-        FROM {VECTOR_TABLE_NAME}
-        JOIN images ON images.id = {VECTOR_TABLE_NAME}.rowid
+        SELECT COUNT(*) AS count,
+               COALESCE(MAX(image_embedding_entries.indexed_at), 0) AS latest_indexed_at
+        FROM image_embedding_entries
+        JOIN {VECTOR_TABLE_NAME}
+          ON {VECTOR_TABLE_NAME}.rowid = image_embedding_entries.id
         """
     ).fetchone()
     return int(row["count"]), float(row["latest_indexed_at"])
@@ -671,6 +848,19 @@ def vector_table_exists(conn: sqlite3.Connection) -> bool:
     return _table_exists(conn, VECTOR_TABLE_NAME)
 
 
+def get_vector_dimensions(conn: sqlite3.Connection) -> int | None:
+    if not _table_exists(conn, "app_metadata"):
+        if vector_table_exists(conn):
+            return DEFAULT_VECTOR_DIMENSIONS
+        return None
+    value = _get_metadata(conn, IMAGE_VECTOR_DIMENSIONS_KEY)
+    if value is None:
+        if not vector_table_exists(conn):
+            return None
+        return DEFAULT_VECTOR_DIMENSIONS
+    return int(value)
+
+
 def face_vector_table_exists(conn: sqlite3.Connection) -> bool:
     return _table_exists(conn, FACE_VECTOR_TABLE_NAME)
 
@@ -699,6 +889,38 @@ def _ensure_column(
     }
     if column_name not in columns:
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def _ensure_metadata_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _get_metadata(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute(
+        "SELECT value FROM app_metadata WHERE key = ?",
+        (key,),
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row["value"])
+
+
+def _set_metadata(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO app_metadata (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (key, value),
+    )
 
 
 def _row_to_indexed_image(row: sqlite3.Row) -> IndexedImage:
@@ -775,8 +997,8 @@ def _path_is_in_scan_scope(path: Path, scopes: list[tuple[Path, bool]]) -> bool:
     return False
 
 
-def _validate_embedding_dimensions(embedding: list[float]) -> None:
-    if len(embedding) != VECTOR_DIMENSIONS:
+def _validate_embedding_dimensions(embedding: list[float], dimensions: int) -> None:
+    if len(embedding) != dimensions:
         raise ValueError(
-            f"Expected {VECTOR_DIMENSIONS} embedding dimensions, got {len(embedding)}"
+            f"Expected {dimensions} embedding dimensions, got {len(embedding)}"
         )

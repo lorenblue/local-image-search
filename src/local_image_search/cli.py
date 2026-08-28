@@ -6,7 +6,11 @@ import sys
 import time
 from pathlib import Path
 
-from local_image_search.clip import make_clip_embedder
+from local_image_search.clip import (
+    OPEN_CLIP_PRESET_ALIASES,
+    OPEN_CLIP_PRESETS,
+    make_clip_embedder,
+)
 from local_image_search.config import DEFAULT_DB_PATH
 from local_image_search.db import (
     connect,
@@ -55,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="open-clip",
         choices=["stub", "open-clip", "openclip", "clip"],
     )
+    add_open_clip_arguments(index_parser)
     index_parser.add_argument(
         "--progress-every",
         type=int,
@@ -76,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="open-clip",
         choices=["stub", "open-clip", "openclip", "clip"],
     )
+    add_open_clip_arguments(search_parser)
     search_parser.set_defaults(handler=handle_search)
 
     similar_parser = subparsers.add_parser(
@@ -89,6 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="open-clip",
         choices=["stub", "open-clip", "openclip", "clip"],
     )
+    add_open_clip_arguments(similar_parser)
     similar_parser.set_defaults(handler=handle_similar)
 
     similar_face_parser = subparsers.add_parser(
@@ -107,6 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="open-clip",
         choices=["stub", "open-clip", "openclip", "clip"],
     )
+    add_open_clip_arguments(serve_parser)
     serve_parser.add_argument(
         "--face-detector",
         default=DEFAULT_FACE_DETECTOR,
@@ -136,6 +144,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def add_open_clip_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--clip-model-preset",
+        choices=sorted(OPEN_CLIP_PRESETS | OPEN_CLIP_PRESET_ALIASES),
+        default=None,
+        help="OpenCLIP preset to use when --clip-embedder is open-clip",
+    )
+    parser.add_argument(
+        "--clip-model",
+        default=None,
+        help="Override the OpenCLIP model name, for example ViT-B-32",
+    )
+    parser.add_argument(
+        "--clip-pretrained",
+        default=None,
+        help="Override the OpenCLIP pretrained weights",
+    )
+
+
 def handle_init(args: argparse.Namespace) -> int:
     with connect(args.db) as conn:
         init_db(conn)
@@ -157,7 +184,7 @@ def handle_status(args: argparse.Namespace) -> int:
 
 
 def handle_index(args: argparse.Namespace) -> int:
-    clip_embedder = make_clip_embedder(args.clip_embedder)
+    clip_embedder = make_configured_clip_embedder(args)
     face_detector = make_face_detector(args.face_detector)
     started = time.perf_counter()
 
@@ -219,13 +246,13 @@ def _format_elapsed(seconds: float) -> str:
 
 
 def handle_search(args: argparse.Namespace) -> int:
-    clip_embedder = make_clip_embedder(args.clip_embedder)
+    clip_embedder = make_configured_clip_embedder(args)
     response = SearchService(args.db, clip_embedder).search(args.query, args.limit)
     return _print_results(response["results"])
 
 
 def handle_similar(args: argparse.Namespace) -> int:
-    clip_embedder = make_clip_embedder(args.clip_embedder)
+    clip_embedder = make_configured_clip_embedder(args)
     response = SearchService(args.db, clip_embedder).similar(args.image, args.limit)
     return _print_results(response["results"])
 
@@ -258,12 +285,22 @@ def _print_results(results: list[dict]) -> int:
 
 
 def handle_serve(args: argparse.Namespace) -> int:
-    clip_embedder = make_clip_embedder(args.clip_embedder)
+    clip_embedder = make_configured_clip_embedder(args, lazy=True)
     face_detector = make_face_detector(args.face_detector)
     from local_image_search.server import run_server
 
     run_server(args.db, clip_embedder, face_detector, args.host, args.port)
     return 0
+
+
+def make_configured_clip_embedder(args: argparse.Namespace, *, lazy: bool = False):
+    return make_clip_embedder(
+        args.clip_embedder,
+        model_preset=args.clip_model_preset,
+        model_name=args.clip_model,
+        pretrained=args.clip_pretrained,
+        lazy=lazy,
+    )
 
 
 def handle_faces_review(args: argparse.Namespace) -> int:

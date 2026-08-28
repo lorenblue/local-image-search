@@ -1,23 +1,45 @@
-import { spawn } from "child_process";
+import { execFile, spawn } from "child_process";
 import { homedir } from "os";
 import { dirname, join } from "path";
+import { promisify } from "util";
 
 const SERVER_START_TIMEOUT_MS = 20_000;
+const SERVER_STOP_TIMEOUT_MS = 5_000;
 const SERVER_HEALTH_RETRY_MS = 500;
+const execFileAsync = promisify(execFile);
 
 let serverStartPromise: Promise<void> | null = null;
+
+type ServerStatus = {
+  database?: string;
+  clipEmbedder?: string;
+  clipModelPreset?: string | null;
+};
 
 export async function ensureServerRunning(
   apiBaseUrl: string,
   projectDirectory: string,
+  clipModelPreset: string,
 ): Promise<void> {
-  const statusUrl = `${normalizeBaseUrl(apiBaseUrl)}/status`;
-  if (await isAvailable(statusUrl)) {
+  const normalizedBaseUrl = normalizeBaseUrl(apiBaseUrl);
+  const statusUrl = `${normalizedBaseUrl}/status`;
+  const { port } = apiAddress(normalizedBaseUrl);
+  const status = await fetchStatus(statusUrl);
+
+  if (status && !isLocalImageSearchStatus(status)) {
+    throw new Error(`${statusUrl} is responding, but it does not look like Local Image Search`);
+  }
+
+  if (status?.clipModelPreset === clipModelPreset) {
     return;
   }
 
+  if (status) {
+    await stopServer(port, statusUrl);
+  }
+
   if (!serverStartPromise) {
-    const command = buildServerCommand(projectDirectory, apiBaseUrl);
+    const command = buildServerCommand(projectDirectory, apiBaseUrl, clipModelPreset);
     serverStartPromise = startServer(command, statusUrl).finally(() => {
       serverStartPromise = null;
     });
@@ -29,6 +51,7 @@ export async function ensureServerRunning(
 function buildServerCommand(
   projectDirectory: string,
   apiBaseUrl: string,
+  clipModelPreset: string,
 ): string {
   const projectDir = expandHome(projectDirectory);
   const executablePath = join(projectDir, ".venv", "bin", "image-search");
@@ -49,6 +72,8 @@ function buildServerCommand(
     shellQuote(host),
     "--port",
     shellQuote(port),
+    "--clip-model-preset",
+    shellQuote(clipModelPreset),
     ">>",
     shellQuote(logPath),
     "2>&1",
@@ -64,7 +89,8 @@ async function startServer(command: string, statusUrl: string): Promise<void> {
 
   const startedAt = Date.now();
   while (Date.now() - startedAt < SERVER_START_TIMEOUT_MS) {
-    if (await isAvailable(statusUrl)) {
+    const status = await fetchStatus(statusUrl);
+    if (status && isLocalImageSearchStatus(status)) {
       return;
     }
     await sleep(SERVER_HEALTH_RETRY_MS);
@@ -77,13 +103,51 @@ async function startServer(command: string, statusUrl: string): Promise<void> {
   );
 }
 
-async function isAvailable(url: string): Promise<boolean> {
+async function fetchStatus(url: string): Promise<ServerStatus | null> {
   try {
     const response = await fetch(url);
-    return response.ok;
+    if (!response.ok) {
+      return null;
+    }
+    return (await response.json()) as ServerStatus;
   } catch {
-    return false;
+    return null;
   }
+}
+
+async function stopServer(port: string, statusUrl: string): Promise<void> {
+  const pids = await listeningPids(port);
+  if (pids.length === 0) {
+    return;
+  }
+
+  await execFileAsync("/bin/kill", pids);
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < SERVER_STOP_TIMEOUT_MS) {
+    if (!(await fetchStatus(statusUrl))) {
+      return;
+    }
+    await sleep(SERVER_HEALTH_RETRY_MS);
+  }
+}
+
+async function listeningPids(port: string): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync("/usr/sbin/lsof", [
+      `-tiTCP:${port}`,
+      "-sTCP:LISTEN",
+    ]);
+    return stdout
+      .split("\n")
+      .map((pid) => pid.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function isLocalImageSearchStatus(status: ServerStatus): boolean {
+  return typeof status.database === "string" && typeof status.clipEmbedder === "string";
 }
 
 function expandHome(path: string): string {

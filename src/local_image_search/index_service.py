@@ -36,6 +36,7 @@ class IndexProgress:
     faces_indexed: int = 0
     skipped: int = 0
     deleted: int = 0
+    phase: str = "idle"
     last_file: str | None = None
     started_at: float | None = None
     finished_at: float | None = None
@@ -51,6 +52,7 @@ class IndexProgress:
             "facesIndexed": self.faces_indexed,
             "skipped": self.skipped,
             "deleted": self.deleted,
+            "phase": self.phase,
             "lastFile": self.last_file,
             "startedAt": self.started_at,
             "finishedAt": self.finished_at,
@@ -67,6 +69,7 @@ class IndexProgress:
             faces_indexed=self.faces_indexed,
             skipped=self.skipped,
             deleted=self.deleted,
+            phase=self.phase,
             last_file=self.last_file,
             started_at=self.started_at,
             finished_at=self.finished_at,
@@ -89,6 +92,7 @@ def index_roots(
     progress = IndexProgress(
         roots=[str(root) for root in roots],
         running=True,
+        phase="scanning",
         started_at=time.time(),
     )
     _notify(on_progress, progress)
@@ -96,15 +100,24 @@ def index_roots(
     try:
         images = scan_images(roots)
         progress.total = len(images)
+        progress.phase = "starting"
         _notify(on_progress, progress)
 
         with connect(db_path) as conn:
+            progress.phase = "preparingDatabase"
+            _notify(on_progress, progress)
             init_db(conn)
-            ensure_vector_table(conn)
+            ensure_vector_table(conn, clip_embedder.dimensions)
             for image in images:
-                progress.processed += 1
+                progress.phase = "indexing"
                 progress.last_file = image.file_name
-                clip_stale = needs_indexing(conn, image, clip_embedder.name)
+                _notify(on_progress, progress)
+                clip_stale = needs_indexing(
+                    conn,
+                    image,
+                    clip_embedder.name,
+                    clip_embedder.dimensions,
+                )
 
                 if clip_stale:
                     embedding = clip_embedder.embed_image(image.path)
@@ -134,6 +147,7 @@ def index_roots(
                         image.path,
                         face_detector,
                     )
+                progress.processed += 1
                 conn.commit()
                 _notify(on_progress, progress)
 
@@ -142,12 +156,14 @@ def index_roots(
                 [image.path for image in images],
                 roots,
             )
+            progress.phase = "cleanup"
             conn.commit()
     except Exception as exc:
         progress.error = str(exc)
         raise
     finally:
         progress.running = False
+        progress.phase = "idle"
         progress.finished_at = time.time()
         _notify(on_progress, progress)
 
@@ -176,14 +192,16 @@ class BackgroundIndexService:
         roots = list(roots)
         if not roots:
             raise ValueError("At least one folder is required")
+        root_labels = [str(root) for root in roots]
 
         with self._lock:
             if self._progress.running:
                 return self._progress.copy().to_dict()
 
             self._progress = IndexProgress(
-                roots=[str(root) for root in roots],
+                roots=root_labels,
                 running=True,
+                phase="scanning",
                 started_at=time.time(),
             )
             self._thread = threading.Thread(
@@ -211,8 +229,12 @@ class BackgroundIndexService:
                 self._progress.error = str(exc)
 
     def _set_progress(self, progress: IndexProgress) -> None:
-        with self._lock:
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
             self._progress = progress.copy()
+        finally:
+            self._lock.release()
 
 
 def _thumbnail_dir_for_db(db_path: Path) -> Path:

@@ -12,6 +12,7 @@ from local_image_search.db import (
     count_images,
     count_searchable_images,
     get_primary_face_for_image,
+    get_vector_dimensions,
     search_indexed_images,
     search_similar_faces,
 )
@@ -24,11 +25,6 @@ class SearchService:
         self.db_path = db_path
         self.clip_embedder = clip_embedder
         self.started_at = time.time()
-        if clip_embedder.dimensions != 512:
-            raise ValueError(
-                "sqlite-vec CLIP search expects "
-                f"512-dimensional embeddings, got {clip_embedder.dimensions}"
-            )
 
     def status(self) -> dict:
         try:
@@ -37,14 +33,20 @@ class SearchService:
                 faces = count_faces(conn)
                 face_embeddings = count_face_embeddings(conn)
                 searchable = count_searchable_images(conn, self.clip_embedder.name)
+                vector_dimensions = get_vector_dimensions(conn)
         except (FileNotFoundError, sqlite3.OperationalError):
             total = 0
             faces = 0
             face_embeddings = 0
             searchable = 0
+            vector_dimensions = None
         return {
             "database": str(self.db_path),
             "clipEmbedder": self.clip_embedder.name,
+            "clipModelPreset": getattr(self.clip_embedder, "model_preset", None),
+            "clipEmbeddingDimensions": self.clip_embedder.dimensions,
+            "clipModelLoaded": getattr(self.clip_embedder, "loaded", True),
+            "indexEmbeddingDimensions": vector_dimensions,
             "indexedImages": total,
             "indexedFaces": faces,
             "indexedFaceEmbeddings": face_embeddings,

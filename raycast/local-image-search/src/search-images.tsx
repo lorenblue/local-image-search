@@ -21,6 +21,7 @@ type Preferences = {
   apiBaseUrl: string;
   projectDirectory: string;
   indexedFolders?: string;
+  clipModelPreset: string;
 };
 
 type SearchResult = {
@@ -86,6 +87,10 @@ type PrimaryFaceResponse = {
 type StatusResponse = {
   database: string;
   clipEmbedder: string;
+  clipModelPreset: string | null;
+  clipEmbeddingDimensions: number;
+  clipModelLoaded: boolean;
+  indexEmbeddingDimensions: number | null;
   indexedImages: number;
   searchableImages: number;
   indexing: IndexingStatus;
@@ -104,6 +109,7 @@ type IndexingStatus = {
   indexed: number;
   skipped: number;
   deleted: number;
+  phase: string;
   lastFile: string | null;
   startedAt: number | null;
   finishedAt: number | null;
@@ -117,6 +123,7 @@ const execFileAsync = promisify(execFile);
 export default function Command() {
   const preferences = getPreferenceValues<Preferences>();
   const apiBaseUrl = normalizeBaseUrl(preferences.apiBaseUrl);
+  const clipModelPreset = normalizeClipModelPreset(preferences.clipModelPreset);
   const [query, setQuery] = useState("");
   const [similarSource, setSimilarSource] = useState<SearchResult | null>(null);
   const [similarFaceSource, setSimilarFaceSource] =
@@ -139,14 +146,19 @@ export default function Command() {
       setIsLoading(true);
       setError(null);
       try {
-        await ensureServerRunning(apiBaseUrl, preferences.projectDirectory);
+        await ensureServerRunning(
+          apiBaseUrl,
+          preferences.projectDirectory,
+          clipModelPreset,
+        );
         const indexedFolders = parseIndexedFolders(preferences.indexedFolders);
-        if (indexedFolders.length > 0) {
-          await postJson(`${apiBaseUrl}/sync`, { roots: indexedFolders });
-        }
-        const response = await fetchJson<StatusResponse>(
+        let response = await fetchJson<StatusResponse>(
           `${apiBaseUrl}/status`,
         );
+        if (indexedFolders.length > 0 && !response.indexing.running) {
+          await postJson(`${apiBaseUrl}/sync`, { roots: indexedFolders });
+          response = await fetchJson<StatusResponse>(`${apiBaseUrl}/status`);
+        }
         if (!cancelled) {
           setStatus(response);
         }
@@ -165,7 +177,7 @@ export default function Command() {
     return () => {
       cancelled = true;
     };
-  }, [apiBaseUrl, preferences.projectDirectory, preferences.indexedFolders]);
+  }, [apiBaseUrl, preferences.projectDirectory, preferences.indexedFolders, clipModelPreset]);
 
   useEffect(() => {
     if (!status?.indexing.running) {
@@ -388,15 +400,19 @@ function StatusItem({
   apiBaseUrl: string;
 }) {
   const indexingLabel = status.indexing.running
-    ? ` · indexing ${status.indexing.processed}/${status.indexing.total}`
+    ? ` · ${indexingPhaseLabel(status.indexing)}`
     : "";
   const errorLabel = status.indexing.error ? " · indexing error" : "";
+  const modelLabel = status.clipModelPreset
+    ? ` · ${status.clipModelPreset}`
+    : "";
+  const modelLoadLabel = status.clipModelLoaded ? "" : " · loading model";
 
   return (
     <Grid.Item
       id="status"
       title="Local Image Search"
-      subtitle={`${status.searchableImages} searchable images${indexingLabel}${errorLabel} · ${status.memory.currentMb.toFixed(0)} MB`}
+      subtitle={`${status.searchableImages} searchable images${indexingLabel}${errorLabel}${modelLabel}${modelLoadLabel} · ${status.memory.currentMb.toFixed(0)} MB`}
       content={{ source: Icon.MagnifyingGlass }}
       actions={
         <ActionPanel>
@@ -557,8 +573,28 @@ function normalizeBaseUrl(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
+function normalizeClipModelPreset(value: string): string {
+  return value === "fast" ? "fast" : "better";
+}
+
 function scoreLabel(score: number): string {
   return score.toFixed(3);
+}
+
+function indexingPhaseLabel(indexing: IndexingStatus): string {
+  if (indexing.phase === "starting") {
+    return "starting index";
+  }
+  if (indexing.phase === "preparingDatabase") {
+    return "preparing database";
+  }
+  if (indexing.phase === "scanning") {
+    return "scanning folders";
+  }
+  if (indexing.total > 0) {
+    return `indexing ${indexing.processed}/${indexing.total}`;
+  }
+  return "indexing";
 }
 
 function navigationTitle(

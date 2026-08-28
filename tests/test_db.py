@@ -16,6 +16,7 @@ from local_image_search.db import (
     ensure_vector_table,
     get_image_id,
     get_primary_face_for_image,
+    get_vector_dimensions,
     init_db,
     list_faces_for_image,
     search_similar_faces,
@@ -39,6 +40,12 @@ def test_init_db_uses_image_and_face_schema(tmp_path: Path) -> None:
             row["name"]
             for row in conn.execute("PRAGMA table_info(faces)").fetchall()
         }
+        image_embedding_entry_columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(image_embedding_entries)"
+            ).fetchall()
+        }
         face_cluster_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(face_clusters)").fetchall()
@@ -55,6 +62,13 @@ def test_init_db_uses_image_and_face_schema(tmp_path: Path) -> None:
         "face_detection_model",
         "faces_indexed_at",
         "thumbnail_path",
+        "indexed_at",
+    }
+    assert image_embedding_entry_columns == {
+        "id",
+        "image_id",
+        "embedding_model",
+        "dimensions",
         "indexed_at",
     }
     assert face_columns == {
@@ -135,6 +149,76 @@ def test_delete_missing_paths_only_prunes_scanned_roots(tmp_path: Path) -> None:
         assert paths == {live_a, missing_b}
         assert count_images(conn) == 2
         assert count_searchable_images(conn, embedding_model) == 2
+
+
+def test_upsert_indexed_image_keeps_vectors_for_multiple_models(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    image_path = tmp_path / "image.jpg"
+    image_path.write_bytes(b"test image placeholder")
+    image = ImageFile(image_path, image_path.name, 10, None, 1)
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn, 512)
+
+        upsert_indexed_image(conn, image, "clip-fast", [1.0] + [0.0] * 511, None)
+        upsert_indexed_image(conn, image, "clip-better", [0.0, 1.0] + [0.0] * 510, None)
+        conn.commit()
+
+        assert count_searchable_images(conn, "clip-fast") == 1
+        assert count_searchable_images(conn, "clip-better") == 1
+
+
+def test_upsert_indexed_image_clears_other_model_vectors_when_file_changes(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "images.db"
+    image_path = tmp_path / "image.jpg"
+    image_path.write_bytes(b"test image placeholder")
+    original = ImageFile(image_path, image_path.name, 10, None, 1)
+    changed = ImageFile(image_path, image_path.name, 20, None, 2)
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn, 512)
+
+        upsert_indexed_image(conn, original, "clip-fast", [1.0] + [0.0] * 511, None)
+        upsert_indexed_image(conn, original, "clip-better", [0.0, 1.0] + [0.0] * 510, None)
+        upsert_indexed_image(conn, changed, "clip-fast", [1.0] + [0.0] * 511, None)
+        conn.commit()
+
+        assert count_searchable_images(conn, "clip-fast") == 1
+        assert count_searchable_images(conn, "clip-better") == 0
+
+
+def test_ensure_vector_table_rebuilds_when_dimensions_change(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    image_path = tmp_path / "image.jpg"
+    image_path.write_bytes(b"test image placeholder")
+    image = ImageFile(image_path, image_path.name, 10, None, 1)
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn, 512)
+        upsert_indexed_image(conn, image, "test-clip-512", [1.0] + [0.0] * 511, None)
+
+        ensure_vector_table(conn, 768)
+        conn.commit()
+
+        image_row = conn.execute(
+            "SELECT embedding_model, indexed_at FROM images WHERE path = ?",
+            (str(image_path),),
+        ).fetchone()
+
+        assert get_vector_dimensions(conn) == 768
+        assert image_row["embedding_model"] == ""
+        assert image_row["indexed_at"] == 0
+        assert count_searchable_images(conn, "test-clip-512") == 0
+
+        upsert_indexed_image(conn, image, "test-clip-768", [1.0] + [0.0] * 767, None)
+        conn.commit()
+
+        assert count_searchable_images(conn, "test-clip-768") == 1
 
 
 def test_upsert_faces_for_image_replaces_existing_face_rows(tmp_path: Path) -> None:
