@@ -12,7 +12,7 @@ import {
   showToast,
 } from "@raycast/api";
 import { execFile } from "child_process";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { promisify } from "util";
 
 import { ensureServerRunning } from "./server";
@@ -39,6 +39,8 @@ type SearchResponse = {
   limit: number;
   elapsedMs: number;
   results: SearchResult[];
+  hasMore: boolean;
+  nextCursor: string | null;
 };
 
 type SimilarResponse = {
@@ -46,6 +48,8 @@ type SimilarResponse = {
   limit: number;
   elapsedMs: number;
   results: SearchResult[];
+  hasMore: boolean;
+  nextCursor: string | null;
 };
 
 type FaceBox = {
@@ -72,6 +76,8 @@ type SimilarFaceResponse = {
   limit: number;
   elapsedMs: number;
   results: FaceResult[];
+  hasMore: boolean;
+  nextCursor: string | null;
 };
 
 type PrimaryFaceResponse = {
@@ -85,6 +91,7 @@ type PrimaryFaceResponse = {
 };
 
 type StatusResponse = {
+  apiVersion: number;
   database: string;
   clipEmbedder: string;
   clipModelPreset: string | null;
@@ -129,12 +136,17 @@ export default function Command() {
   const [similarFaceSource, setSimilarFaceSource] =
     useState<SearchResult | null>(null);
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<string | undefined>();
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [pasteSelection, setPasteSelection] = useState<string[]>([]);
+  const searchRequestId = useRef(0);
+  const loadMoreInFlight = useRef(false);
   const pasteSelectionSet = useMemo(
     () => new Set(pasteSelection),
     [pasteSelection],
@@ -209,6 +221,9 @@ export default function Command() {
 
   useEffect(() => {
     const trimmedQuery = query.trim();
+    const requestId = ++searchRequestId.current;
+    setHasMore(false);
+    setNextCursor(null);
     if (!trimmedQuery && !similarSource && !similarFaceSource) {
       setResults([]);
       setSelectedItemId(undefined);
@@ -220,15 +235,13 @@ export default function Command() {
       setIsLoading(true);
       setError(null);
       try {
-        const url = new URL(searchUrl(apiBaseUrl, trimmedQuery, similarFaceSource));
-        if (trimmedQuery) {
-          url.searchParams.set("q", trimmedQuery);
-        } else if (similarFaceSource?.faceId) {
-          url.searchParams.set("faceId", String(similarFaceSource.faceId));
-        } else if (similarSource) {
-          url.searchParams.set("path", similarSource.path);
-        }
-        url.searchParams.set("limit", String(DEFAULT_LIMIT));
+        const url = buildSearchRequestUrl(
+          apiBaseUrl,
+          query,
+          similarSource,
+          similarFaceSource,
+          DEFAULT_LIMIT,
+        );
         const response = await fetchJson<
           SearchResponse | SimilarResponse | SimilarFaceResponse
         >(
@@ -238,14 +251,18 @@ export default function Command() {
         const nextResults = similarFaceSource
           ? (response as SimilarFaceResponse).results.map(faceResultToSearchResult)
           : (response as SearchResponse | SimilarResponse).results;
-        setResults(nextResults);
-        setSelectedItemId(resultItemId(nextResults[0]));
+        if (!controller.signal.aborted && requestId === searchRequestId.current) {
+          setResults(nextResults);
+          setSelectedItemId(resultItemId(nextResults[0]));
+          setHasMore(response.hasMore);
+          setNextCursor(response.nextCursor);
+        }
       } catch (unknownError) {
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && requestId === searchRequestId.current) {
           setError(errorMessage(unknownError));
         }
       } finally {
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && requestId === searchRequestId.current) {
           setIsLoading(false);
         }
       }
@@ -256,6 +273,54 @@ export default function Command() {
       controller.abort();
     };
   }, [apiBaseUrl, query, similarSource, similarFaceSource]);
+
+  async function handleLoadMore() {
+    if (!hasMore || !nextCursor || loadMoreInFlight.current) {
+      return;
+    }
+
+    const requestId = searchRequestId.current;
+    loadMoreInFlight.current = true;
+    setIsLoadingMore(true);
+    try {
+      const url = buildSearchRequestUrl(
+        apiBaseUrl,
+        query,
+        similarSource,
+        similarFaceSource,
+        DEFAULT_LIMIT,
+        nextCursor,
+      );
+      const response = await fetchJson<
+        SearchResponse | SimilarResponse | SimilarFaceResponse
+      >(url.toString());
+      if (requestId !== searchRequestId.current) {
+        return;
+      }
+
+      const additionalResults = similarFaceSource
+        ? (response as SimilarFaceResponse).results.map(faceResultToSearchResult)
+        : (response as SearchResponse | SimilarResponse).results;
+      setResults((currentResults) => {
+        const existingResultIds = new Set(currentResults.map(resultItemId));
+        return [
+          ...currentResults,
+          ...additionalResults.filter(
+            (result) => !existingResultIds.has(resultItemId(result)),
+          ),
+        ];
+      });
+      setHasMore(response.hasMore);
+      setNextCursor(response.nextCursor);
+    } catch (unknownError) {
+      if (requestId === searchRequestId.current) {
+        setError(errorMessage(unknownError));
+      }
+    } finally {
+      loadMoreInFlight.current = false;
+      setIsLoadingMore(false);
+    }
+  }
 
   const searchBarPlaceholder = useMemo(() => {
     if (similarFaceSource) {
@@ -268,7 +333,7 @@ export default function Command() {
       return `Search ${status.searchableImages} indexed images`;
     }
     return "Search indexed images";
-  }, [similarSource, status]);
+  }, [similarFaceSource, similarSource, status]);
   const baseNavigationTitle = navigationTitle(
     query,
     similarSource,
@@ -379,10 +444,15 @@ export default function Command() {
       columns={5}
       fit={Grid.Fit.Fill}
       inset={Grid.Inset.Small}
-      isLoading={isLoading}
+      isLoading={isLoading || isLoadingMore}
       navigationTitle={gridNavigationTitle}
       onSearchTextChange={handleSearchTextChange}
       onSelectionChange={(id) => setSelectedItemId(id ?? undefined)}
+      pagination={{
+        pageSize: DEFAULT_LIMIT,
+        hasMore,
+        onLoadMore: handleLoadMore,
+      }}
       searchBarPlaceholder={searchBarPlaceholder}
       searchText={query}
       selectedItemId={selectedItemId}
@@ -717,6 +787,30 @@ function resultItemId(result: SearchResult | undefined): string | undefined {
     return undefined;
   }
   return result.faceId ? `face-${result.faceId}` : `image-${result.id}`;
+}
+
+function buildSearchRequestUrl(
+  apiBaseUrl: string,
+  query: string,
+  similarSource: SearchResult | null,
+  similarFaceSource: SearchResult | null,
+  limit: number,
+  cursor?: string | null,
+): URL {
+  const trimmedQuery = query.trim();
+  const url = new URL(searchUrl(apiBaseUrl, trimmedQuery, similarFaceSource));
+  if (trimmedQuery) {
+    url.searchParams.set("q", trimmedQuery);
+  } else if (similarFaceSource?.faceId) {
+    url.searchParams.set("faceId", String(similarFaceSource.faceId));
+  } else if (similarSource) {
+    url.searchParams.set("path", similarSource.path);
+  }
+  url.searchParams.set("limit", String(limit));
+  if (cursor) {
+    url.searchParams.set("cursor", cursor);
+  }
+  return url;
 }
 
 function searchUrl(

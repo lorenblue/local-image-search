@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import json
+import math
 import sqlite3
 import time
 from pathlib import Path
@@ -13,11 +17,19 @@ from local_image_search.db import (
     count_searchable_images,
     get_primary_face_for_image,
     get_vector_dimensions,
-    search_indexed_images,
-    search_similar_faces,
+    search_indexed_images_page,
+    search_similar_faces_page,
 )
 from local_image_search.metrics import memory_status
-from local_image_search.models import FaceSearchResult, IndexedFace, SearchResult
+from local_image_search.models import (
+    FaceSearchResult,
+    IndexedFace,
+    SearchCursor,
+    SearchPage,
+    SearchResult,
+)
+
+API_VERSION = 3
 
 
 class SearchService:
@@ -41,6 +53,7 @@ class SearchService:
             searchable = 0
             vector_dimensions = None
         return {
+            "apiVersion": API_VERSION,
             "database": str(self.db_path),
             "clipEmbedder": self.clip_embedder.name,
             "clipModelPreset": getattr(self.clip_embedder, "model_preset", None),
@@ -55,55 +68,60 @@ class SearchService:
             "uptimeSeconds": round(time.time() - self.started_at, 3),
         }
 
-    def search(self, query: str, limit: int) -> dict:
+    def search(self, query: str, limit: int, cursor: str | None = None) -> dict:
         started = time.perf_counter()
+        search_cursor = _decode_cursor(cursor)
         with connect_readonly(self.db_path) as conn:
-            results = search_indexed_images(
+            page = search_indexed_images_page(
                 conn,
                 self.clip_embedder.embed_text(query),
                 self.clip_embedder.name,
                 limit,
+                cursor=search_cursor,
             )
         elapsed_ms = (time.perf_counter() - started) * 1000
         return {
             "query": query,
             "limit": limit,
             "elapsedMs": round(elapsed_ms, 3),
-            "results": _serialize_results(results),
+            **_serialize_search_page(page, _serialize_results),
         }
 
-    def similar(self, image_path: Path, limit: int) -> dict:
+    def similar(self, image_path: Path, limit: int, cursor: str | None = None) -> dict:
         image_path = image_path.expanduser().resolve()
         if not image_path.exists():
             raise FileNotFoundError(f"Image does not exist: {image_path}")
 
         started = time.perf_counter()
+        search_cursor = _decode_cursor(cursor)
         with connect_readonly(self.db_path) as conn:
-            results = search_indexed_images(
+            page = search_indexed_images_page(
                 conn,
                 self.clip_embedder.embed_image(image_path),
                 self.clip_embedder.name,
                 limit,
                 exclude_path=image_path,
+                cursor=search_cursor,
             )
         elapsed_ms = (time.perf_counter() - started) * 1000
         return {
             "path": str(image_path),
             "limit": limit,
             "elapsedMs": round(elapsed_ms, 3),
-            "results": _serialize_results(results),
+            **_serialize_search_page(page, _serialize_results),
         }
 
-    def similar_face(self, face_id: int, limit: int) -> dict:
+    def similar_face(self, face_id: int, limit: int, cursor: str | None = None) -> dict:
         started = time.perf_counter()
+        search_cursor = _decode_cursor(cursor)
         with connect_readonly(self.db_path) as conn:
-            results = search_similar_faces(conn, face_id, limit)
+            page = search_similar_faces_page(conn, face_id, limit, cursor=search_cursor)
         elapsed_ms = (time.perf_counter() - started) * 1000
         return {
             "faceId": face_id,
             "limit": limit,
             "elapsedMs": round(elapsed_ms, 3),
-            "results": _serialize_face_results(results),
+            **_serialize_search_page(page, _serialize_face_results),
         }
 
     def primary_face(self, image_id: int) -> dict:
@@ -128,6 +146,62 @@ def _serialize_results(results: list[SearchResult]) -> list[dict]:
         }
         for result in results
     ]
+
+
+def _serialize_search_page(page: SearchPage, serializer) -> dict:
+    return {
+        "results": serializer(page.results),
+        "hasMore": page.has_more,
+        "nextCursor": _encode_cursor(page.next_cursor),
+    }
+
+
+def _encode_cursor(cursor: SearchCursor | None) -> str | None:
+    if cursor is None:
+        return None
+    payload = json.dumps(
+        {
+            "distance": cursor.distance,
+            "rowid": cursor.rowid,
+            "seenImageIds": list(cursor.seen_image_ids),
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(value: str | None) -> SearchCursor | None:
+    if value is None:
+        return None
+    try:
+        padded_value = value + ("=" * (-len(value) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded_value).decode("utf-8"))
+        distance = payload["distance"]
+        rowid = payload["rowid"]
+        seen_image_ids = payload.get("seenImageIds", [])
+    except (KeyError, TypeError, ValueError, binascii.Error) as exc:
+        raise ValueError("Invalid search cursor") from exc
+    if (
+        isinstance(distance, bool)
+        or not isinstance(distance, (int, float))
+        or not math.isfinite(distance)
+        or isinstance(rowid, bool)
+        or not isinstance(rowid, int)
+        or rowid < 1
+        or not isinstance(seen_image_ids, list)
+        or any(
+            isinstance(image_id, bool)
+            or not isinstance(image_id, int)
+            or image_id < 1
+            for image_id in seen_image_ids
+        )
+    ):
+        raise ValueError("Invalid search cursor")
+    return SearchCursor(
+        distance=float(distance),
+        rowid=rowid,
+        seen_image_ids=tuple(sorted(set(seen_image_ids))),
+    )
 
 
 def _serialize_face_results(results: list[FaceSearchResult]) -> list[dict]:

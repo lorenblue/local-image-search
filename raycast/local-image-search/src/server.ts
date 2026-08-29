@@ -5,12 +5,14 @@ import { promisify } from "util";
 
 const SERVER_START_TIMEOUT_MS = 20_000;
 const SERVER_STOP_TIMEOUT_MS = 5_000;
+const REQUIRED_API_VERSION = 3;
 const SERVER_HEALTH_RETRY_MS = 500;
 const execFileAsync = promisify(execFile);
 
 let serverStartPromise: Promise<void> | null = null;
 
 type ServerStatus = {
+  apiVersion?: number;
   database?: string;
   clipEmbedder?: string;
   clipModelPreset?: string | null;
@@ -30,7 +32,10 @@ export async function ensureServerRunning(
     throw new Error(`${statusUrl} is responding, but it does not look like Local Image Search`);
   }
 
-  if (status?.clipModelPreset === clipModelPreset) {
+  if (
+    status?.apiVersion === REQUIRED_API_VERSION &&
+    status.clipModelPreset === clipModelPreset
+  ) {
     return;
   }
 

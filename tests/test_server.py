@@ -42,6 +42,7 @@ def test_api_search_returns_ranked_clip_results(tmp_path: Path) -> None:
 
     assert client.get("/health").json() == {"ok": True}
     status = client.get("/status").json()
+    assert status["apiVersion"] == 3
     assert status["searchableImages"] == 1
     assert status["clipEmbedder"] == clip_embedder.name
     assert "memory" in status
@@ -125,6 +126,61 @@ def test_api_search_skips_deleted_index_entries(tmp_path: Path) -> None:
     assert response.status_code == 200
     body = response.json()
     assert [result["fileName"] for result in body["results"]] == [live_path.name]
+
+
+def test_api_search_paginates_with_distance_cursor(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    clip_embedder = StubClipEmbedder()
+    embedding = [1.0] + [0.0] * 511
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn)
+        for index in range(12):
+            image_path = tmp_path / f"image-{index:02d}.jpg"
+            image_path.write_bytes(b"test image placeholder")
+            upsert_indexed_image(
+                conn,
+                ImageFile(image_path, image_path.name, 10, None, 1),
+                clip_embedder.name,
+                embedding,
+                None,
+            )
+        conn.commit()
+
+    client = TestClient(create_app(db_path, clip_embedder))
+
+    first_page = client.get("/search", params={"q": "images", "limit": 2}).json()
+    assert first_page["hasMore"] is True
+    assert first_page["nextCursor"]
+
+    second_page_response = client.get(
+        "/search",
+        params={
+            "q": "images",
+            "limit": 2,
+            "cursor": first_page["nextCursor"],
+        },
+    )
+
+    assert second_page_response.status_code == 200
+    second_page = second_page_response.json()
+    first_ids = {result["id"] for result in first_page["results"]}
+    second_ids = {result["id"] for result in second_page["results"]}
+    assert first_ids.isdisjoint(second_ids)
+    assert second_page["hasMore"] is True
+
+
+def test_api_search_rejects_invalid_cursor(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path / "images.db", StubClipEmbedder()))
+
+    response = client.get(
+        "/search",
+        params={"q": "images", "cursor": "not-a-valid-cursor"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid search cursor"
 
 
 def test_api_similar_returns_ranked_results_and_excludes_source(tmp_path: Path) -> None:

@@ -19,12 +19,100 @@ from local_image_search.db import (
     get_vector_dimensions,
     init_db,
     list_faces_for_image,
+    search_indexed_images_page,
     search_similar_faces,
+    search_similar_faces_page,
     serialize_embedding,
     upsert_faces_for_image,
     upsert_indexed_image,
 )
 from local_image_search.models import FaceBox, ImageFile
+
+
+def test_search_indexed_images_page_uses_distance_cursor(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    query_embedding = [1.0] + [0.0] * 511
+    image_paths = []
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn)
+        for index in range(12):
+            image_path = tmp_path / f"image-{index:02d}.jpg"
+            image_path.write_bytes(b"test image placeholder")
+            image_paths.append(image_path)
+            embedding = _normalize([1.0, (index + 1) * 0.05] + [0.0] * 510)
+            upsert_indexed_image(
+                conn,
+                ImageFile(image_path, image_path.name, 10, None, 1),
+                "test-clip",
+                embedding,
+                None,
+            )
+        conn.commit()
+
+        all_results = []
+        cursor = None
+        for _ in range(10):
+            page = search_indexed_images_page(
+                conn,
+                query_embedding,
+                "test-clip",
+                limit=2,
+                cursor=cursor,
+            )
+            all_results.extend(page.results)
+            if not page.has_more:
+                break
+            assert page.next_cursor is not None
+            cursor = page.next_cursor
+        else:
+            raise AssertionError("cursor pagination did not terminate")
+
+        assert [result.image.path for result in all_results] == image_paths
+        assert len({result.image.path for result in all_results}) == len(image_paths)
+
+
+def test_search_indexed_images_page_keeps_equal_distance_vectors(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    query_embedding = [1.0] + [0.0] * 511
+    image_paths = []
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn)
+        for index in range(12):
+            image_path = tmp_path / f"equal-{index:02d}.jpg"
+            image_path.write_bytes(b"test image placeholder")
+            image_paths.append(image_path)
+            upsert_indexed_image(
+                conn,
+                ImageFile(image_path, image_path.name, 10, None, 1),
+                "test-clip",
+                query_embedding,
+                None,
+            )
+        conn.commit()
+
+        all_results = []
+        cursor = None
+        for _ in range(10):
+            page = search_indexed_images_page(
+                conn,
+                query_embedding,
+                "test-clip",
+                limit=2,
+                cursor=cursor,
+            )
+            all_results.extend(page.results)
+            if not page.has_more:
+                break
+            assert page.next_cursor is not None
+            cursor = page.next_cursor
+        else:
+            raise AssertionError("equal-distance cursor pagination did not terminate")
+
+        assert [result.image.path for result in all_results] == image_paths
 
 
 def test_init_db_uses_image_and_face_schema(tmp_path: Path) -> None:
@@ -429,6 +517,249 @@ def test_search_similar_faces_returns_one_best_match_per_image(tmp_path: Path) -
 
         assert [result.face.image.path for result in results] == [near_path, far_path]
         assert len({result.face.image.id for result in results}) == len(results)
+
+
+def test_search_similar_faces_page_deduplicates_images_across_pages(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    source_path = tmp_path / "source.jpg"
+    repeated_path = tmp_path / "repeated.jpg"
+    next_path = tmp_path / "next.jpg"
+    for path in [source_path, repeated_path, next_path]:
+        path.write_bytes(b"test image placeholder")
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn)
+        source_image_id = _insert_indexed_image(conn, source_path)
+        repeated_image_id = _insert_indexed_image(conn, repeated_path)
+        next_image_id = _insert_indexed_image(conn, next_path)
+        embedding = [1.0] + [0.0] * 511
+        upsert_faces_for_image(
+            conn,
+            source_image_id,
+            "test-face",
+            [FaceBox(1, 2, 3, 4, 0.99, embedding=embedding)],
+        )
+        upsert_faces_for_image(
+            conn,
+            repeated_image_id,
+            "test-face",
+            [
+                FaceBox(1, 2, 3, 4, 0.98, embedding=embedding),
+                FaceBox(5, 6, 7, 8, 0.97, embedding=embedding),
+            ],
+        )
+        upsert_faces_for_image(
+            conn,
+            next_image_id,
+            "test-face",
+            [FaceBox(9, 10, 11, 12, 0.96, embedding=embedding)],
+        )
+        conn.commit()
+
+        source_face_id = conn.execute(
+            "SELECT id FROM faces WHERE image_id = ?",
+            (source_image_id,),
+        ).fetchone()["id"]
+
+        first_page = search_similar_faces_page(conn, source_face_id, limit=1)
+        assert first_page.has_more is True
+        assert first_page.next_cursor is not None
+        second_page = search_similar_faces_page(
+            conn,
+            source_face_id,
+            limit=1,
+            cursor=first_page.next_cursor,
+        )
+
+        assert [result.face.image.id for result in first_page.results] == [repeated_image_id]
+        assert [result.face.image.id for result in second_page.results] == [next_image_id]
+
+
+def test_search_indexed_images_page_expands_past_missing_paths(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    query_embedding = [1.0] + [0.0] * 511
+    valid_path = tmp_path / "valid.jpg"
+    valid_path.write_bytes(b"test image placeholder")
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn)
+        for index in range(10):
+            missing_path = tmp_path / f"missing-{index:02d}.jpg"
+            upsert_indexed_image(
+                conn,
+                ImageFile(missing_path, missing_path.name, 10, None, 1),
+                "test-clip",
+                query_embedding,
+                None,
+            )
+        upsert_indexed_image(
+            conn,
+            ImageFile(valid_path, valid_path.name, 10, None, 1),
+            "test-clip",
+            query_embedding,
+            None,
+        )
+        conn.commit()
+
+        page = search_indexed_images_page(
+            conn,
+            query_embedding,
+            "test-clip",
+            limit=1,
+        )
+
+        assert [result.image.path for result in page.results] == [valid_path]
+        assert page.has_more is False
+
+
+def test_search_indexed_images_page_expands_past_other_embedding_models(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    query_embedding = [1.0] + [0.0] * 511
+    target_path = tmp_path / "target.jpg"
+    target_path.write_bytes(b"test image placeholder")
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn)
+        for index in range(10):
+            old_path = tmp_path / f"old-{index:02d}.jpg"
+            old_path.write_bytes(b"test image placeholder")
+            upsert_indexed_image(
+                conn,
+                ImageFile(old_path, old_path.name, 10, None, 1),
+                "old-clip",
+                _normalize([1.0, (index + 1) * 0.01] + [0.0] * 510),
+                None,
+            )
+        target_image_id = upsert_indexed_image(
+            conn,
+            ImageFile(target_path, target_path.name, 10, None, 1),
+            "target-clip",
+            _normalize([1.0, 0.5] + [0.0] * 510),
+            None,
+        )
+        conn.commit()
+
+        page = search_indexed_images_page(
+            conn,
+            query_embedding,
+            "target-clip",
+            limit=1,
+        )
+
+        assert [result.image.id for result in page.results] == [target_image_id]
+        assert page.has_more is False
+
+
+def test_search_similar_faces_page_expands_past_duplicate_faces(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    source_path = tmp_path / "source.jpg"
+    repeated_path = tmp_path / "repeated.jpg"
+    next_path = tmp_path / "next.jpg"
+    for path in [source_path, repeated_path, next_path]:
+        path.write_bytes(b"test image placeholder")
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn)
+        source_image_id = _insert_indexed_image(conn, source_path)
+        repeated_image_id = _insert_indexed_image(conn, repeated_path)
+        next_image_id = _insert_indexed_image(conn, next_path)
+        embedding = [1.0] + [0.0] * 511
+        upsert_faces_for_image(
+            conn,
+            source_image_id,
+            "test-face",
+            [FaceBox(1, 2, 3, 4, 0.99, embedding=embedding)],
+        )
+        upsert_faces_for_image(
+            conn,
+            repeated_image_id,
+            "test-face",
+            [
+                FaceBox(index, index, 3, 4, 0.98, embedding=embedding)
+                for index in range(10)
+            ],
+        )
+        upsert_faces_for_image(
+            conn,
+            next_image_id,
+            "test-face",
+            [FaceBox(9, 10, 11, 12, 0.96, embedding=embedding)],
+        )
+        conn.commit()
+
+        source_face_id = conn.execute(
+            "SELECT id FROM faces WHERE image_id = ?",
+            (source_image_id,),
+        ).fetchone()["id"]
+
+        page = search_similar_faces_page(conn, source_face_id, limit=2)
+
+        assert [result.face.image.id for result in page.results] == [
+            repeated_image_id,
+            next_image_id,
+        ]
+        assert page.has_more is False
+
+
+def test_search_similar_faces_page_expands_past_other_embedding_models(tmp_path: Path) -> None:
+    db_path = tmp_path / "images.db"
+    source_path = tmp_path / "source.jpg"
+    target_path = tmp_path / "target.jpg"
+    for path in [source_path, target_path]:
+        path.write_bytes(b"test image placeholder")
+
+    with connect(db_path) as conn:
+        init_db(conn)
+        ensure_vector_table(conn)
+        source_image_id = _insert_indexed_image(conn, source_path)
+        target_image_id = _insert_indexed_image(conn, target_path)
+        query_embedding = [1.0] + [0.0] * 511
+        upsert_faces_for_image(
+            conn,
+            source_image_id,
+            "target-face",
+            [FaceBox(1, 2, 3, 4, 0.99, embedding=query_embedding)],
+        )
+        for index in range(10):
+            old_path = tmp_path / f"old-face-{index:02d}.jpg"
+            old_path.write_bytes(b"test image placeholder")
+            old_image_id = _insert_indexed_image(conn, old_path)
+            upsert_faces_for_image(
+                conn,
+                old_image_id,
+                "old-face",
+                [
+                    FaceBox(
+                        1,
+                        2,
+                        3,
+                        4,
+                        0.9,
+                        embedding=_normalize([1.0, (index + 1) * 0.01] + [0.0] * 510),
+                    )
+                ],
+            )
+        upsert_faces_for_image(
+            conn,
+            target_image_id,
+            "target-face",
+            [FaceBox(5, 6, 7, 8, 0.98, embedding=_normalize([1.0, 0.5] + [0.0] * 510))],
+        )
+        conn.commit()
+
+        source_face_id = conn.execute(
+            "SELECT id FROM faces WHERE image_id = ?",
+            (source_image_id,),
+        ).fetchone()["id"]
+
+        page = search_similar_faces_page(conn, source_face_id, limit=1)
+
+        assert [result.face.image.id for result in page.results] == [target_image_id]
+        assert page.has_more is False
 
 
 def test_get_primary_face_for_image_uses_largest_indexed_face(tmp_path: Path) -> None:

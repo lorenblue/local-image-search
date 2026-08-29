@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Generic, TypeVar
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,23 @@ class IndexedFace:
 class FaceSearchResult:
     face: IndexedFace
     score: float
+
+
+@dataclass(frozen=True)
+class SearchCursor:
+    distance: float
+    rowid: int
+    seen_image_ids: tuple[int, ...] = ()
+
+
+SearchResultItem = TypeVar("SearchResultItem")
+
+
+@dataclass(frozen=True)
+class SearchPage(Generic[SearchResultItem]):
+    results: list[SearchResultItem]
+    next_cursor: SearchCursor | None
+    has_more: bool
 
 
 @dataclass(frozen=True)

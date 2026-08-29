@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
   "pillow>=10.0",
   "psutil>=6.0",
-  "sqlite-vec>=0.1.9",
+  "sqlite-vec @ git+https://github.com/vlasky/sqlite-vec.git@v0.2.6-alpha",
 ]
 
 [project.optional-dependencies]

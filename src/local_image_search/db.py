@@ -12,6 +12,8 @@ from local_image_search.models import (
     ImageFile,
     IndexedFace,
     IndexedImage,
+    SearchCursor,
+    SearchPage,
     SearchResult,
 )
 
@@ -515,52 +517,109 @@ def search_indexed_images(
     limit: int,
     exclude_path: Path | None = None,
 ) -> list[SearchResult]:
+    return search_indexed_images_page(
+        conn,
+        query_embedding,
+        embedding_model,
+        limit,
+        exclude_path=exclude_path,
+    ).results
+
+
+def search_indexed_images_page(
+    conn: sqlite3.Connection,
+    query_embedding: list[float],
+    embedding_model: str,
+    limit: int,
+    exclude_path: Path | None = None,
+    cursor: SearchCursor | None = None,
+) -> SearchPage[SearchResult]:
     if limit <= 0:
-        return []
+        return SearchPage(results=[], next_cursor=None, has_more=False)
     if not vector_table_exists(conn):
-        return []
+        return SearchPage(results=[], next_cursor=None, has_more=False)
     dimensions = get_vector_dimensions(conn)
     if dimensions is None:
-        return []
+        return SearchPage(results=[], next_cursor=None, has_more=False)
     _validate_embedding_dimensions(query_embedding, dimensions)
-    search_limit = limit * SEARCH_OVERFETCH_MULTIPLIER
+    search_limit = max(limit * SEARCH_OVERFETCH_MULTIPLIER, limit + 1)
     if exclude_path:
         search_limit += 1
-    rows = conn.execute(
-        f"""
-        SELECT images.id, images.path, images.file_name, images.file_size,
-               images.created_at, images.modified_at,
-               image_embedding_entries.embedding_model AS embedding_model,
-               images.thumbnail_path,
-               matches.distance,
-               (1.0 - ((matches.distance * matches.distance) / 2.0)) AS score
-        FROM {VECTOR_TABLE_NAME} AS matches
-        JOIN image_embedding_entries ON image_embedding_entries.id = matches.rowid
-        JOIN images ON images.id = image_embedding_entries.image_id
-        WHERE matches.embedding MATCH ?
-          AND matches.k = ?
-          AND image_embedding_entries.embedding_model = ?
-        ORDER BY matches.distance
-        """,
-        (serialize_embedding(query_embedding), search_limit, embedding_model),
-    ).fetchall()
     excluded = _normalize_search_path(exclude_path)
-    results = []
-    for row in rows:
-        image = _row_to_indexed_image(row)
-        if excluded is not None and _normalize_search_path(image.path) == excluded:
-            continue
-        if not image.path.exists():
-            continue
-        results.append(
-            SearchResult(
-                image=image,
-                score=float(row["score"]),
-            )
+    while True:
+        distance_clause = "\n          AND matches.distance >= ?" if cursor else ""
+        parameters: list[object] = [serialize_embedding(query_embedding), search_limit]
+        if cursor:
+            parameters.append(cursor.distance)
+        rows = conn.execute(
+            f"""
+            SELECT images.id, images.path, images.file_name, images.file_size,
+                   images.created_at, images.modified_at,
+                   image_embedding_entries.embedding_model AS embedding_model,
+                   images.thumbnail_path,
+                   matches.rowid AS vector_rowid,
+                   matches.distance,
+                   (1.0 - ((matches.distance * matches.distance) / 2.0)) AS score
+            FROM {VECTOR_TABLE_NAME} AS matches
+            JOIN image_embedding_entries ON image_embedding_entries.id = matches.rowid
+            JOIN images ON images.id = image_embedding_entries.image_id
+            WHERE matches.embedding MATCH ?
+              AND matches.k = ?
+              {distance_clause}
+            ORDER BY matches.distance
+            """,
+            parameters,
+        ).fetchall()
+
+        results = []
+        last_cursor = None
+        has_more = False
+        ordered_rows = sorted(
+            rows,
+            key=lambda row: (float(row["distance"]), int(row["vector_rowid"])),
         )
-        if len(results) >= limit:
-            break
-    return results
+        for row in ordered_rows:
+            row_cursor = SearchCursor(
+                distance=float(row["distance"]),
+                rowid=int(row["vector_rowid"]),
+            )
+            if cursor and not _is_after_cursor(row_cursor, cursor):
+                continue
+            if row["embedding_model"] != embedding_model:
+                continue
+            image = _row_to_indexed_image(row)
+            if excluded is not None and _normalize_search_path(image.path) == excluded:
+                continue
+            if not image.path.exists():
+                continue
+            if len(results) >= limit:
+                has_more = True
+                break
+            results.append(
+                SearchResult(
+                    image=image,
+                    score=float(row["score"]),
+                )
+            )
+            last_cursor = row_cursor
+
+        page_is_complete = len(rows) < search_limit
+        boundary_is_complete = (
+            last_cursor is not None
+            and bool(ordered_rows)
+            and float(ordered_rows[-1]["distance"]) > last_cursor.distance
+        )
+        if len(results) >= limit and (
+            page_is_complete or (has_more and boundary_is_complete)
+        ):
+            return SearchPage(
+                results=results,
+                next_cursor=last_cursor if has_more else None,
+                has_more=has_more,
+            )
+        if page_is_complete:
+            return SearchPage(results=results, next_cursor=None, has_more=False)
+        search_limit = _grow_search_limit(search_limit)
 
 
 def search_similar_faces(
@@ -568,10 +627,19 @@ def search_similar_faces(
     face_id: int,
     limit: int,
 ) -> list[FaceSearchResult]:
+    return search_similar_faces_page(conn, face_id, limit).results
+
+
+def search_similar_faces_page(
+    conn: sqlite3.Connection,
+    face_id: int,
+    limit: int,
+    cursor: SearchCursor | None = None,
+) -> SearchPage[FaceSearchResult]:
     if limit <= 0:
-        return []
+        return SearchPage(results=[], next_cursor=None, has_more=False)
     if not face_vector_table_exists(conn):
-        return []
+        return SearchPage(results=[], next_cursor=None, has_more=False)
 
     source = conn.execute(
         f"""
@@ -587,57 +655,114 @@ def search_similar_faces(
     if source is None:
         raise ValueError(f"Face embedding was not found: {face_id}")
 
-    search_limit = (limit * SEARCH_OVERFETCH_MULTIPLIER) + 1
-    rows = conn.execute(
-        f"""
-        SELECT faces.id AS face_id,
-               faces.x,
-               faces.y,
-               faces.width,
-               faces.height,
-               faces.detection_score,
-               faces.embedding_model AS face_embedding_model,
-               images.id,
-               images.path,
-               images.file_name,
-               images.file_size,
-               images.created_at,
-               images.modified_at,
-               images.embedding_model,
-               images.thumbnail_path,
-               matches.distance,
-               (1.0 - ((matches.distance * matches.distance) / 2.0)) AS score
-        FROM {FACE_VECTOR_TABLE_NAME} AS matches
-        JOIN faces ON faces.id = matches.rowid
-        JOIN images ON images.id = faces.image_id
-        WHERE matches.embedding MATCH ?
-          AND matches.k = ?
-          AND faces.embedding_model = ?
-        ORDER BY matches.distance
-        """,
-        (source["embedding"], search_limit, source["embedding_model"]),
-    ).fetchall()
+    search_limit = max((limit * SEARCH_OVERFETCH_MULTIPLIER) + 1, limit + 1)
+    base_seen_image_ids = set(cursor.seen_image_ids if cursor else ())
+    base_seen_image_ids.add(int(source["image_id"]))
+    while True:
+        distance_clause = "\n          AND matches.distance >= ?" if cursor else ""
+        parameters: list[object] = [source["embedding"], search_limit]
+        if cursor:
+            parameters.append(cursor.distance)
+        rows = conn.execute(
+            f"""
+            SELECT faces.id AS face_id,
+                   faces.x,
+                   faces.y,
+                   faces.width,
+                   faces.height,
+                   faces.detection_score,
+                   faces.embedding_model AS face_embedding_model,
+                   images.id,
+                   images.path,
+                   images.file_name,
+                   images.file_size,
+                   images.created_at,
+                   images.modified_at,
+                   images.embedding_model,
+                   images.thumbnail_path,
+                   matches.rowid AS vector_rowid,
+                   matches.distance,
+                   (1.0 - ((matches.distance * matches.distance) / 2.0)) AS score
+            FROM {FACE_VECTOR_TABLE_NAME} AS matches
+            JOIN faces ON faces.id = matches.rowid
+            JOIN images ON images.id = faces.image_id
+            WHERE matches.embedding MATCH ?
+              AND matches.k = ?
+              {distance_clause}
+            ORDER BY matches.distance
+            """,
+            parameters,
+        ).fetchall()
 
-    results = []
-    seen_image_ids = {int(source["image_id"])}
-    for row in rows:
-        if int(row["face_id"]) == face_id:
-            continue
-        image = _row_to_indexed_image(row)
-        if image.id in seen_image_ids:
-            continue
-        if not image.path.exists():
-            continue
-        seen_image_ids.add(image.id)
-        results.append(
-            FaceSearchResult(
-                face=_row_to_indexed_face(row, image),
-                score=float(row["score"]),
-            )
+        results = []
+        seen_image_ids = set(base_seen_image_ids)
+        last_cursor = None
+        has_more = False
+        ordered_rows = sorted(
+            rows,
+            key=lambda row: (float(row["distance"]), int(row["vector_rowid"])),
         )
-        if len(results) >= limit:
-            break
-    return results
+        for row in ordered_rows:
+            row_cursor = SearchCursor(
+                distance=float(row["distance"]),
+                rowid=int(row["vector_rowid"]),
+            )
+            if cursor and not _is_after_cursor(row_cursor, cursor):
+                continue
+            if int(row["face_id"]) == face_id:
+                continue
+            if row["face_embedding_model"] != source["embedding_model"]:
+                continue
+            image = _row_to_indexed_image(row)
+            if image.id in seen_image_ids:
+                continue
+            if not image.path.exists():
+                continue
+            if len(results) >= limit:
+                has_more = True
+                break
+            seen_image_ids.add(image.id)
+            results.append(
+                FaceSearchResult(
+                    face=_row_to_indexed_face(row, image),
+                    score=float(row["score"]),
+                )
+            )
+            last_cursor = row_cursor
+
+        page_is_complete = len(rows) < search_limit
+        boundary_is_complete = (
+            last_cursor is not None
+            and bool(ordered_rows)
+            and float(ordered_rows[-1]["distance"]) > last_cursor.distance
+        )
+        if len(results) >= limit and (
+            page_is_complete or (has_more and boundary_is_complete)
+        ):
+            if has_more and last_cursor is not None:
+                last_cursor = SearchCursor(
+                    distance=last_cursor.distance,
+                    rowid=last_cursor.rowid,
+                    seen_image_ids=tuple(sorted(seen_image_ids)),
+                )
+            return SearchPage(
+                results=results,
+                next_cursor=last_cursor if has_more else None,
+                has_more=has_more,
+            )
+        if page_is_complete:
+            return SearchPage(results=results, next_cursor=None, has_more=False)
+        search_limit = _grow_search_limit(search_limit)
+
+
+def _is_after_cursor(candidate: SearchCursor, cursor: SearchCursor) -> bool:
+    return candidate.distance > cursor.distance or (
+        candidate.distance == cursor.distance and candidate.rowid > cursor.rowid
+    )
+
+
+def _grow_search_limit(search_limit: int) -> int:
+    return search_limit * 2
 
 
 def get_primary_face_for_image(

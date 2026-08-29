@@ -53,28 +53,37 @@ def create_app(
     def search(
         q: str = Query(min_length=1),
         limit: int = Query(default=10, ge=1, le=100),
+        cursor: str | None = Query(default=None),
     ) -> dict:
-        return service.search(q.strip(), limit)
+        try:
+            return service.search(q.strip(), limit, cursor=cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/similar")
     def similar(
         path: str = Query(min_length=1),
         limit: int = Query(default=10, ge=1, le=100),
+        cursor: str | None = Query(default=None),
     ) -> dict:
         try:
-            return service.similar(Path(path), limit)
+            return service.similar(Path(path), limit, cursor=cursor)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/similar-face")
     def similar_face(
         face_id: int = Query(alias="faceId", ge=1),
         limit: int = Query(default=10, ge=1, le=100),
+        cursor: str | None = Query(default=None),
     ) -> dict:
         try:
-            return service.similar_face(face_id, limit)
+            return service.similar_face(face_id, limit, cursor=cursor)
         except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            status_code = 400 if str(exc) == "Invalid search cursor" else 404
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     @app.get("/primary-face")
     def primary_face(
