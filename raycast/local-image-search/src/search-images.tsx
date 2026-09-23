@@ -125,6 +125,7 @@ type IndexingStatus = {
 
 const DEFAULT_LIMIT = 30;
 const STATUS_POLL_MS = 2000;
+const PASTE_FOCUS_SETTLE_MS = 500;
 const execFileAsync = promisify(execFile);
 
 export default function Command() {
@@ -430,6 +431,7 @@ export default function Command() {
     try {
       await pasteFiles(paths);
       setPasteSelection([]);
+      setMultiSelectMode(false);
     } catch (unknownError) {
       await showToast({
         style: Toast.Style.Failure,
@@ -741,11 +743,23 @@ function navigationTitle(
 async function pasteFiles(paths: string[]) {
   await setPasteboardFiles(paths);
   await closeMainWindow({ clearRootSearch: false });
-  await delay(150);
-  await execFileAsync("/usr/bin/osascript", [
-    "-e",
-    'tell application "System Events" to keystroke "v" using command down',
-  ]);
+  // macOS 27 can take longer to return focus to the app that launched Raycast.
+  // Sending the shortcut while Raycast is still frontmost pastes nowhere.
+  await delay(PASTE_FOCUS_SETTLE_MS);
+  try {
+    await execFileAsync("/usr/bin/osascript", [
+      "-e",
+      'tell application "System Events" to key code 9 using {command down}',
+    ]);
+  } catch (unknownError) {
+    throw new Error(
+      [
+        "macOS blocked the multi-file paste shortcut.",
+        "Enable Raycast under System Settings > Privacy & Security > Device Control and Data Access, then try again.",
+        errorMessage(unknownError),
+      ].join(" "),
+    );
+  }
 }
 
 async function setPasteboardFiles(paths: string[]) {
