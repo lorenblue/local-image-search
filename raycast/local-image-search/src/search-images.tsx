@@ -113,6 +113,8 @@ type IndexingStatus = {
   processed: number;
   indexed: number;
   skipped: number;
+  failed?: number;
+  failures?: { path: string; stage: string; error: string }[];
   deleted: number;
   phase: string;
   lastFile: string | null;
@@ -497,16 +499,36 @@ function StatusItem({
     ? ` · ${indexingPhaseLabel(status.indexing)}`
     : "";
   const errorLabel = status.indexing.error ? " · indexing error" : "";
+  const failureLabel = status.indexing.failed
+    ? ` · ${status.indexing.failed} failed files`
+    : "";
+  const failures = status.indexing.failures ?? [];
   const modelLoadLabel = status.modelLoaded ? "" : " · loading model";
 
   return (
     <Grid.Item
       id="status"
       title="Local Image Search"
-      subtitle={`${status.searchableImages} searchable images${indexingLabel}${errorLabel}${modelLoadLabel} · ${status.memory.currentMb.toFixed(0)} MB`}
+      subtitle={`${status.searchableImages} searchable images${indexingLabel}${errorLabel}${failureLabel}${modelLoadLabel} · ${status.memory.currentMb.toFixed(0)} MB`}
       content={{ source: Icon.MagnifyingGlass }}
       actions={
         <ActionPanel>
+          {failures.length > 0 && (
+            <Action.Push
+              title="View Indexing Failures"
+              icon={Icon.ExclamationMark}
+              target={
+                <Detail
+                  markdown={failures
+                    .map(
+                      (failure) =>
+                        `### ${failure.stage}\n\n${failure.path}\n\n${failure.error}`,
+                    )
+                    .join("\n\n---\n\n")}
+                />
+              }
+            />
+          )}
           <Action.OpenInBrowser
             title="Open API Reference"
             url={`${apiBaseUrl}/scalar`}

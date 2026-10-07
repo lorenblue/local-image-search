@@ -59,6 +59,7 @@ class InsightFaceDetector(FaceDetector):
 
         self._app = app
         self._np = np
+        self.name = f"insightface/{model_name}"
 
     def detect_faces(self, image_path: Path) -> list[FaceBox]:
         try:

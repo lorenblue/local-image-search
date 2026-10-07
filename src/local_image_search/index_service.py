@@ -35,6 +35,8 @@ class IndexProgress:
     indexed: int = 0
     faces_indexed: int = 0
     skipped: int = 0
+    failed: int = 0
+    failures: list[dict[str, str]] = field(default_factory=list)
     deleted: int = 0
     phase: str = "idle"
     last_file: str | None = None
@@ -51,6 +53,8 @@ class IndexProgress:
             "indexed": self.indexed,
             "facesIndexed": self.faces_indexed,
             "skipped": self.skipped,
+            "failed": self.failed,
+            "failures": [dict(failure) for failure in self.failures],
             "deleted": self.deleted,
             "phase": self.phase,
             "lastFile": self.last_file,
@@ -68,6 +72,8 @@ class IndexProgress:
             indexed=self.indexed,
             faces_indexed=self.faces_indexed,
             skipped=self.skipped,
+            failed=self.failed,
+            failures=[dict(failure) for failure in self.failures],
             deleted=self.deleted,
             phase=self.phase,
             last_file=self.last_file,
@@ -120,7 +126,13 @@ def index_roots(
                 )
 
                 if embedding_stale:
-                    embedding = embedder.embed_image(image.path)
+                    try:
+                        embedding = embedder.embed_image(image.path)
+                    except Exception as exc:
+                        _record_failure(progress, image.path, "embedding", exc)
+                        progress.processed += 1
+                        _notify(on_progress, progress)
+                        continue
                     thumbnail_path = ensure_thumbnail(image.path, thumbnail_dir=thumbnail_dir)
                     image_id = upsert_indexed_image(
                         conn,
@@ -141,12 +153,19 @@ def index_roots(
                     face_detector.name,
                     face_detector.embedding_model,
                 ):
-                    progress.faces_indexed += _detect_and_store_faces(
-                        conn,
-                        image_id,
-                        image.path,
-                        face_detector,
-                    )
+                    try:
+                        faces = face_detector.detect_faces(image.path)
+                    except Exception as exc:
+                        _record_failure(progress, image.path, "faces", exc)
+                    else:
+                        upsert_faces_for_image(
+                            conn,
+                            image_id,
+                            face_detector.name,
+                            faces,
+                            embedding_model=face_detector.embedding_model,
+                        )
+                        progress.faces_indexed += len(faces)
                 progress.processed += 1
                 conn.commit()
                 _notify(on_progress, progress)
@@ -260,21 +279,16 @@ def _ensure_stored_thumbnail(
     update_thumbnail_path(conn, image_path, thumbnail_path)
 
 
-def _detect_and_store_faces(
-    conn: sqlite3.Connection,
-    image_id: int,
+def _record_failure(
+    progress: IndexProgress,
     image_path: Path,
-    face_detector: FaceDetector,
-) -> int:
-    faces = face_detector.detect_faces(image_path)
-    upsert_faces_for_image(
-        conn,
-        image_id,
-        face_detector.name,
-        faces,
-        embedding_model=face_detector.embedding_model,
+    stage: str,
+    error: Exception,
+) -> None:
+    progress.failed += 1
+    progress.failures.append(
+        {"path": str(image_path), "stage": stage, "error": str(error)}
     )
-    return len(faces)
 
 
 def _notify(callback: ProgressCallback | None, progress: IndexProgress) -> None:

@@ -172,8 +172,14 @@ def handle_index(args: argparse.Namespace) -> int:
         print(f"indexed: {result.indexed}")
         print(f"faces indexed: {result.faces_indexed}")
         print(f"skipped unchanged: {result.skipped}")
+        print(f"failed: {result.failed}")
+        for failure in result.failures:
+            print(
+                f"{failure['stage']} failed: {failure['path']}: {failure['error']}",
+                file=sys.stderr,
+            )
         print(f"deleted missing: {result.deleted}")
-        return 0
+        return 1 if result.failed else 0
 
 
 def _print_index_progress(
@@ -194,7 +200,7 @@ def _print_index_progress(
     print(
         f"[{progress.processed}/{progress.total} {percent:5.1f}%] "
         f"indexed={progress.indexed} faces={progress.faces_indexed} "
-        f"skipped={progress.skipped} "
+        f"skipped={progress.skipped} failed={progress.failed} "
         f"elapsed={_format_elapsed(elapsed)} "
         f"{format_memory_status()} "
         f"last={progress.last_file}"

@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from local_image_search.config import DEFAULT_GEMMA_MODEL_PATH
 from local_image_search.embedder import Embedder
@@ -69,7 +69,9 @@ class EmbeddingGemma2Embedder(Embedder):
                     register_heif_opener()
                 with NamedTemporaryFile(suffix=".png") as converted:
                     with Image.open(image_path) as image:
-                        image.convert("RGB").save(converted.name, format="PNG")
+                        ImageOps.exif_transpose(image).convert("RGB").save(
+                            converted.name, format="PNG"
+                        )
                     content = self._content.ImageFile(converted.name)
                     return self._load().compute_embedding(content).embedding
             content = self._content.ImageFile(str(image_path))

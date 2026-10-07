@@ -138,6 +138,11 @@ For indexing progress and errors, inspect the API status:
 curl http://127.0.0.1:8766/status
 ```
 
+Individual embedding or face inference failures are recorded in `indexing.failures`
+and do not stop the remaining files. Raycast shows a failed-file count and a
+**View Indexing Failures** action on its status item. Failed work is retried on
+the next folder sync; database errors still stop indexing.
+
 If a folder appears in Raycast preferences but its images do not show up in the
 index, macOS privacy permissions may be blocking the background server. Grant
 Full Disk Access to Raycast, then restart the local server by quitting the old

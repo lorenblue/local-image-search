@@ -90,6 +90,28 @@ def test_gemma_converts_webp_and_removes_temporary_file(litert, tmp_path, fails)
     assert image_path.exists()
 
 
+def test_gemma_conversion_applies_exif_orientation(litert, tmp_path):
+    module, model = litert
+    image_path = tmp_path / "rotated.webp"
+    image = Image.new("RGB", (40, 20), "red")
+    exif = image.getexif()
+    exif[274] = 6  # Rotate 90 degrees clockwise for display.
+    image.save(image_path, exif=exif)
+
+    def image_file(path):
+        with Image.open(path) as converted:
+            assert converted.size == (20, 40)
+            assert converted.getexif().get(274) is None
+        return path
+
+    module.Content.ImageFile.side_effect = image_file
+    with EmbeddingGemma2Embedder(model) as embedder:
+        embedder.embed_image(image_path)
+    with Image.open(image_path) as original:
+        assert original.size == (40, 20)
+        assert original.getexif()[274] == 6
+
+
 @pytest.mark.parametrize("command", ["index", "search", "similar", "serve"])
 def test_cli_gemma_configuration(command, litert):
     _, model = litert

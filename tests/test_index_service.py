@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from local_image_search.db import (
@@ -141,3 +143,66 @@ def _image_file(image_path: Path):
         created_at=None,
         modified_at=stat.st_mtime,
     )
+
+
+@pytest.mark.parametrize("stage", ["embedding", "faces"])
+def test_inference_failure_continues_and_is_retried(tmp_path, stage):
+    album = tmp_path / "album"
+    album.mkdir()
+    for name in ["a.jpg", "b.jpg", "c.jpg"]:
+        Image.new("RGB", (24, 24), "white").save(album / name)
+    db_path = tmp_path / "images.db"
+
+    class FailingEmbedder(StubEmbedder):
+        def embed_image(self, path):
+            if stage == "embedding" and path.name == "b.jpg":
+                raise RuntimeError("bad image")
+            return super().embed_image(path)
+
+    class FailingDetector(CountingFaceDetector):
+        def detect_faces(self, path):
+            if stage == "faces" and path.name == "b.jpg":
+                raise RuntimeError("bad image")
+            return super().detect_faces(path)
+
+    snapshots = []
+    first = index_roots(
+        db_path, [album], FailingEmbedder(), FailingDetector(),
+        on_progress=lambda progress: snapshots.append(progress.copy()),
+    )
+    assert first.processed == first.total == 3
+    assert first.failed == 1
+    assert first.error is None
+    assert first.failures == [{
+        "path": str(album / "b.jpg"), "stage": stage, "error": "bad image",
+    }]
+    assert first.to_dict()["failures"] == first.failures
+    assert snapshots[0].failures == []
+    with connect(db_path) as conn:
+        assert get_image_id(conn, album / "c.jpg") is not None
+        assert count_faces(conn) == 2
+    second = index_roots(db_path, [album], StubEmbedder(), CountingFaceDetector())
+    assert second.failed == 0
+    assert second.indexed == (1 if stage == "embedding" else 0)
+    assert second.faces_indexed == 1
+    with connect(db_path) as conn:
+        assert count_faces(conn) == 3
+
+
+def test_database_failure_still_aborts(tmp_path, monkeypatch):
+    album = tmp_path / "album"
+    album.mkdir()
+    Image.new("RGB", (24, 24), "white").save(album / "a.jpg")
+
+    def fail_write(*args, **kwargs):
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr("local_image_search.index_service.upsert_indexed_image", fail_write)
+    snapshots = []
+    with pytest.raises(sqlite3.OperationalError, match="disk full"):
+        index_roots(
+            tmp_path / "images.db", [album], StubEmbedder(),
+            on_progress=lambda progress: snapshots.append(progress.copy()),
+        )
+    assert snapshots[-1].error == "disk full"
+    assert snapshots[-1].failed == 0
