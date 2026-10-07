@@ -5,7 +5,7 @@ import { promisify } from "util";
 
 const SERVER_START_TIMEOUT_MS = 20_000;
 const SERVER_STOP_TIMEOUT_MS = 5_000;
-const REQUIRED_API_VERSION = 3;
+const REQUIRED_API_VERSION = 4;
 const SERVER_HEALTH_RETRY_MS = 500;
 const execFileAsync = promisify(execFile);
 
@@ -14,14 +14,12 @@ let serverStartPromise: Promise<void> | null = null;
 type ServerStatus = {
   apiVersion?: number;
   database?: string;
-  clipEmbedder?: string;
-  clipModelPreset?: string | null;
+  embedder?: string;
 };
 
 export async function ensureServerRunning(
   apiBaseUrl: string,
   projectDirectory: string,
-  clipModelPreset: string,
 ): Promise<void> {
   const normalizedBaseUrl = normalizeBaseUrl(apiBaseUrl);
   const statusUrl = `${normalizedBaseUrl}/status`;
@@ -32,10 +30,7 @@ export async function ensureServerRunning(
     throw new Error(`${statusUrl} is responding, but it does not look like Local Image Search`);
   }
 
-  if (
-    status?.apiVersion === REQUIRED_API_VERSION &&
-    status.clipModelPreset === clipModelPreset
-  ) {
+  if (status && isCompatibleServer(status)) {
     return;
   }
 
@@ -44,7 +39,7 @@ export async function ensureServerRunning(
   }
 
   if (!serverStartPromise) {
-    const command = buildServerCommand(projectDirectory, apiBaseUrl, clipModelPreset);
+    const command = buildServerCommand(projectDirectory, apiBaseUrl);
     serverStartPromise = startServer(command, statusUrl).finally(() => {
       serverStartPromise = null;
     });
@@ -56,7 +51,6 @@ export async function ensureServerRunning(
 function buildServerCommand(
   projectDirectory: string,
   apiBaseUrl: string,
-  clipModelPreset: string,
 ): string {
   const projectDir = expandHome(projectDirectory);
   const executablePath = join(projectDir, ".venv", "bin", "image-search");
@@ -77,8 +71,6 @@ function buildServerCommand(
     shellQuote(host),
     "--port",
     shellQuote(port),
-    "--clip-model-preset",
-    shellQuote(clipModelPreset),
     ">>",
     shellQuote(logPath),
     "2>&1",
@@ -95,7 +87,7 @@ async function startServer(command: string, statusUrl: string): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < SERVER_START_TIMEOUT_MS) {
     const status = await fetchStatus(statusUrl);
-    if (status && isLocalImageSearchStatus(status)) {
+    if (status && isLocalImageSearchStatus(status) && isCompatibleServer(status)) {
       return;
     }
     await sleep(SERVER_HEALTH_RETRY_MS);
@@ -134,6 +126,7 @@ async function stopServer(port: string, statusUrl: string): Promise<void> {
     }
     await sleep(SERVER_HEALTH_RETRY_MS);
   }
+  throw new Error("The previous server is still shutting down. Wait for indexing to finish and retry.");
 }
 
 async function listeningPids(port: string): Promise<string[]> {
@@ -152,7 +145,12 @@ async function listeningPids(port: string): Promise<string[]> {
 }
 
 function isLocalImageSearchStatus(status: ServerStatus): boolean {
-  return typeof status.database === "string" && typeof status.clipEmbedder === "string";
+  return typeof status.database === "string" && typeof status.apiVersion === "number";
+}
+
+function isCompatibleServer(status: ServerStatus): boolean {
+  return status.apiVersion === REQUIRED_API_VERSION &&
+    status.embedder === "embeddinggemma-2/text-vision-440m";
 }
 
 function expandHome(path: string): string {

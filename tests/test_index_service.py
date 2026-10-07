@@ -4,7 +4,6 @@ from pathlib import Path
 
 from PIL import Image
 
-from local_image_search.clip import StubClipEmbedder
 from local_image_search.db import (
     connect,
     count_face_embeddings,
@@ -18,6 +17,7 @@ from local_image_search.db import (
 from local_image_search.face_detection import FaceDetector
 from local_image_search.index_service import index_roots
 from local_image_search.models import FaceBox
+from local_image_search.stub_embedder import StubEmbedder
 
 
 class CountingFaceDetector(FaceDetector):
@@ -51,13 +51,13 @@ def test_index_roots_stores_face_boxes_and_skips_unchanged_faces(tmp_path: Path)
     first_result = index_roots(
         db_path,
         [album_path],
-        StubClipEmbedder(),
+        StubEmbedder(),
         face_detector=detector,
     )
     second_result = index_roots(
         db_path,
         [album_path],
-        StubClipEmbedder(),
+        StubEmbedder(),
         face_detector=detector,
     )
 
@@ -83,7 +83,7 @@ def test_index_roots_backfills_missing_face_embeddings(tmp_path: Path) -> None:
     image_path = album_path / "portrait.jpg"
     Image.new("RGB", (24, 24), "white").save(image_path)
     image_file = _image_file(image_path)
-    clip_embedder = StubClipEmbedder()
+    embedder = StubEmbedder()
     detector = CountingFaceDetector()
 
     with connect(db_path) as conn:
@@ -92,8 +92,8 @@ def test_index_roots_backfills_missing_face_embeddings(tmp_path: Path) -> None:
         image_id = upsert_indexed_image(
             conn,
             image_file,
-            clip_embedder.name,
-            clip_embedder.embed_image(image_path),
+            embedder.name,
+            embedder.embed_image(image_path),
             None,
         )
         upsert_faces_for_image(
@@ -107,7 +107,7 @@ def test_index_roots_backfills_missing_face_embeddings(tmp_path: Path) -> None:
     result = index_roots(
         db_path,
         [album_path],
-        clip_embedder,
+        embedder,
         face_detector=detector,
     )
 

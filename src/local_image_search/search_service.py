@@ -8,7 +8,6 @@ import sqlite3
 import time
 from pathlib import Path
 
-from local_image_search.clip import ClipEmbedder
 from local_image_search.db import (
     connect_readonly,
     count_face_embeddings,
@@ -20,6 +19,7 @@ from local_image_search.db import (
     search_indexed_images_page,
     search_similar_faces_page,
 )
+from local_image_search.embedder import Embedder
 from local_image_search.metrics import memory_status
 from local_image_search.models import (
     FaceSearchResult,
@@ -29,13 +29,13 @@ from local_image_search.models import (
     SearchResult,
 )
 
-API_VERSION = 3
+API_VERSION = 4
 
 
 class SearchService:
-    def __init__(self, db_path: Path, clip_embedder: ClipEmbedder) -> None:
+    def __init__(self, db_path: Path, embedder: Embedder) -> None:
         self.db_path = db_path
-        self.clip_embedder = clip_embedder
+        self.embedder = embedder
         self.started_at = time.time()
 
     def status(self) -> dict:
@@ -44,7 +44,7 @@ class SearchService:
                 total = count_images(conn)
                 faces = count_faces(conn)
                 face_embeddings = count_face_embeddings(conn)
-                searchable = count_searchable_images(conn, self.clip_embedder.name)
+                searchable = count_searchable_images(conn, self.embedder.name)
                 vector_dimensions = get_vector_dimensions(conn)
         except (FileNotFoundError, sqlite3.OperationalError):
             total = 0
@@ -55,10 +55,9 @@ class SearchService:
         return {
             "apiVersion": API_VERSION,
             "database": str(self.db_path),
-            "clipEmbedder": self.clip_embedder.name,
-            "clipModelPreset": getattr(self.clip_embedder, "model_preset", None),
-            "clipEmbeddingDimensions": self.clip_embedder.dimensions,
-            "clipModelLoaded": getattr(self.clip_embedder, "loaded", True),
+            "embedder": self.embedder.name,
+            "embeddingDimensions": self.embedder.dimensions,
+            "modelLoaded": getattr(self.embedder, "loaded", True),
             "indexEmbeddingDimensions": vector_dimensions,
             "indexedImages": total,
             "indexedFaces": faces,
@@ -74,8 +73,8 @@ class SearchService:
         with connect_readonly(self.db_path) as conn:
             page = search_indexed_images_page(
                 conn,
-                self.clip_embedder.embed_text(query),
-                self.clip_embedder.name,
+                self.embedder.embed_text(query),
+                self.embedder.name,
                 limit,
                 cursor=search_cursor,
             )
@@ -97,8 +96,8 @@ class SearchService:
         with connect_readonly(self.db_path) as conn:
             page = search_indexed_images_page(
                 conn,
-                self.clip_embedder.embed_image(image_path),
-                self.clip_embedder.name,
+                self.embedder.embed_image(image_path),
+                self.embedder.name,
                 limit,
                 exclude_path=image_path,
                 cursor=search_cursor,

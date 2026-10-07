@@ -6,7 +6,6 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from local_image_search.clip import StubClipEmbedder
 from local_image_search.db import (
     connect,
     ensure_vector_table,
@@ -18,11 +17,12 @@ from local_image_search.metrics import memory_status
 from local_image_search.models import FaceBox, ImageFile
 from local_image_search.search_service import SearchService
 from local_image_search.server import create_app
+from local_image_search.stub_embedder import StubEmbedder
 
 
-def test_api_search_returns_ranked_clip_results(tmp_path: Path) -> None:
+def test_api_search_returns_ranked_embedding_results(tmp_path: Path) -> None:
     db_path = tmp_path / "images.db"
-    clip_embedder = StubClipEmbedder()
+    embedder = StubEmbedder()
     image_path = tmp_path / "red-sports-car.jpg"
     image_path.write_bytes(b"test image placeholder")
     image = ImageFile(
@@ -35,16 +35,16 @@ def test_api_search_returns_ranked_clip_results(tmp_path: Path) -> None:
 
     with connect(db_path) as conn:
         init_db(conn)
-        _insert_indexed_image(conn, image, clip_embedder, thumbnail_path=tmp_path / "thumb.jpg")
+        _insert_indexed_image(conn, image, embedder, thumbnail_path=tmp_path / "thumb.jpg")
         conn.commit()
 
-    client = TestClient(create_app(db_path, clip_embedder))
+    client = TestClient(create_app(db_path, embedder))
 
     assert client.get("/health").json() == {"ok": True}
     status = client.get("/status").json()
-    assert status["apiVersion"] == 3
+    assert status["apiVersion"] == 4
     assert status["searchableImages"] == 1
-    assert status["clipEmbedder"] == clip_embedder.name
+    assert status["embedder"] == embedder.name
     assert "memory" in status
     assert status["memory"]["currentMb"] > 0
     assert status["memory"]["peakMb"] > 0
@@ -60,7 +60,7 @@ def test_api_search_returns_ranked_clip_results(tmp_path: Path) -> None:
 
 
 def test_api_status_handles_missing_database(tmp_path: Path) -> None:
-    client = TestClient(create_app(tmp_path / "missing.db", StubClipEmbedder()))
+    client = TestClient(create_app(tmp_path / "missing.db", StubEmbedder()))
 
     status = client.get("/status").json()
 
@@ -73,7 +73,7 @@ def test_api_sync_indexes_folder_in_background(tmp_path: Path) -> None:
     db_path = tmp_path / "images.db"
     image_path = tmp_path / "new-red-car.jpg"
     Image.new("RGB", (16, 16), "red").save(image_path)
-    client = TestClient(create_app(db_path, StubClipEmbedder()))
+    client = TestClient(create_app(db_path, StubEmbedder()))
 
     response = client.post("/sync", json={"roots": [str(tmp_path)]})
 
@@ -91,7 +91,7 @@ def test_api_sync_indexes_folder_in_background(tmp_path: Path) -> None:
 
 def test_api_search_skips_deleted_index_entries(tmp_path: Path) -> None:
     db_path = tmp_path / "images.db"
-    clip_embedder = StubClipEmbedder()
+    embedder = StubEmbedder()
     live_path = tmp_path / "red-sports-truck.jpg"
     missing_path = tmp_path / "red-sports-car.jpg"
     live_path.write_bytes(b"test image placeholder")
@@ -116,10 +116,10 @@ def test_api_search_skips_deleted_index_entries(tmp_path: Path) -> None:
     with connect(db_path) as conn:
         init_db(conn)
         for image in images:
-            _insert_indexed_image(conn, image, clip_embedder, thumbnail_path=None)
+            _insert_indexed_image(conn, image, embedder, thumbnail_path=None)
         conn.commit()
 
-    client = TestClient(create_app(db_path, clip_embedder))
+    client = TestClient(create_app(db_path, embedder))
 
     response = client.get("/search", params={"q": "red sports car", "limit": 1})
 
@@ -130,7 +130,7 @@ def test_api_search_skips_deleted_index_entries(tmp_path: Path) -> None:
 
 def test_api_search_paginates_with_distance_cursor(tmp_path: Path) -> None:
     db_path = tmp_path / "images.db"
-    clip_embedder = StubClipEmbedder()
+    embedder = StubEmbedder()
     embedding = [1.0] + [0.0] * 511
 
     with connect(db_path) as conn:
@@ -142,13 +142,13 @@ def test_api_search_paginates_with_distance_cursor(tmp_path: Path) -> None:
             upsert_indexed_image(
                 conn,
                 ImageFile(image_path, image_path.name, 10, None, 1),
-                clip_embedder.name,
+                embedder.name,
                 embedding,
                 None,
             )
         conn.commit()
 
-    client = TestClient(create_app(db_path, clip_embedder))
+    client = TestClient(create_app(db_path, embedder))
 
     first_page = client.get("/search", params={"q": "images", "limit": 2}).json()
     assert first_page["hasMore"] is True
@@ -172,7 +172,7 @@ def test_api_search_paginates_with_distance_cursor(tmp_path: Path) -> None:
 
 
 def test_api_search_rejects_invalid_cursor(tmp_path: Path) -> None:
-    client = TestClient(create_app(tmp_path / "images.db", StubClipEmbedder()))
+    client = TestClient(create_app(tmp_path / "images.db", StubEmbedder()))
 
     response = client.get(
         "/search",
@@ -185,7 +185,7 @@ def test_api_search_rejects_invalid_cursor(tmp_path: Path) -> None:
 
 def test_api_similar_returns_ranked_results_and_excludes_source(tmp_path: Path) -> None:
     db_path = tmp_path / "images.db"
-    clip_embedder = StubClipEmbedder()
+    embedder = StubEmbedder()
     source_path = tmp_path / "red-sports-car.jpg"
     similar_path = tmp_path / "red-sports-truck.jpg"
     other_path = tmp_path / "beach-sunset.jpg"
@@ -219,10 +219,10 @@ def test_api_similar_returns_ranked_results_and_excludes_source(tmp_path: Path) 
     with connect(db_path) as conn:
         init_db(conn)
         for image in images:
-            _insert_indexed_image(conn, image, clip_embedder, thumbnail_path=None)
+            _insert_indexed_image(conn, image, embedder, thumbnail_path=None)
         conn.commit()
 
-    client = TestClient(create_app(db_path, clip_embedder))
+    client = TestClient(create_app(db_path, embedder))
 
     response = client.get("/similar", params={"path": str(source_path), "limit": 2})
 
@@ -236,12 +236,12 @@ def test_api_similar_returns_ranked_results_and_excludes_source(tmp_path: Path) 
 
 def test_api_similar_returns_404_for_missing_reference_image(tmp_path: Path) -> None:
     db_path = tmp_path / "images.db"
-    clip_embedder = StubClipEmbedder()
+    embedder = StubEmbedder()
     with connect(db_path) as conn:
         init_db(conn)
         conn.commit()
 
-    client = TestClient(create_app(db_path, clip_embedder))
+    client = TestClient(create_app(db_path, embedder))
 
     response = client.get("/similar", params={"path": str(tmp_path / "missing.jpg")})
 
@@ -250,7 +250,7 @@ def test_api_similar_returns_404_for_missing_reference_image(tmp_path: Path) -> 
 
 def test_api_similar_face_returns_ranked_face_results(tmp_path: Path) -> None:
     db_path = tmp_path / "images.db"
-    clip_embedder = StubClipEmbedder()
+    embedder = StubEmbedder()
     source_path = tmp_path / "source.jpg"
     near_path = tmp_path / "near.jpg"
     for path in [source_path, near_path]:
@@ -258,8 +258,8 @@ def test_api_similar_face_returns_ranked_face_results(tmp_path: Path) -> None:
 
     with connect(db_path) as conn:
         init_db(conn)
-        source_image_id = _insert_face_image(conn, source_path, clip_embedder)
-        near_image_id = _insert_face_image(conn, near_path, clip_embedder)
+        source_image_id = _insert_face_image(conn, source_path, embedder)
+        near_image_id = _insert_face_image(conn, near_path, embedder)
         upsert_faces_for_image(
             conn,
             source_image_id,
@@ -282,7 +282,7 @@ def test_api_similar_face_returns_ranked_face_results(tmp_path: Path) -> None:
             (near_image_id,),
         ).fetchone()["id"]
 
-    client = TestClient(create_app(db_path, clip_embedder))
+    client = TestClient(create_app(db_path, embedder))
 
     response = client.get("/similar-face", params={"faceId": source_face_id, "limit": 1})
 
@@ -296,13 +296,13 @@ def test_api_similar_face_returns_ranked_face_results(tmp_path: Path) -> None:
 
 def test_api_primary_face_returns_largest_indexed_face_for_image(tmp_path: Path) -> None:
     db_path = tmp_path / "images.db"
-    clip_embedder = StubClipEmbedder()
+    embedder = StubEmbedder()
     image_path = tmp_path / "group.jpg"
     image_path.write_bytes(b"test image placeholder")
 
     with connect(db_path) as conn:
         init_db(conn)
-        image_id = _insert_face_image(conn, image_path, clip_embedder)
+        image_id = _insert_face_image(conn, image_path, embedder)
         upsert_faces_for_image(
             conn,
             image_id,
@@ -314,7 +314,7 @@ def test_api_primary_face_returns_largest_indexed_face_for_image(tmp_path: Path)
         )
         conn.commit()
 
-    client = TestClient(create_app(db_path, clip_embedder))
+    client = TestClient(create_app(db_path, embedder))
 
     response = client.get("/primary-face", params={"imageId": image_id})
 
@@ -335,12 +335,12 @@ def test_memory_status_reports_current_and_peak_memory() -> None:
 
 def test_search_service_finds_newly_committed_vectors(tmp_path: Path) -> None:
     db_path = tmp_path / "images.db"
-    clip_embedder = StubClipEmbedder()
+    embedder = StubEmbedder()
 
     with connect(db_path) as conn:
         init_db(conn)
 
-    service = SearchService(db_path, clip_embedder)
+    service = SearchService(db_path, embedder)
     assert service.status()["searchableImages"] == 0
 
     image = ImageFile(
@@ -353,7 +353,7 @@ def test_search_service_finds_newly_committed_vectors(tmp_path: Path) -> None:
     image.path.write_bytes(b"test image placeholder")
     with connect(db_path) as conn:
         ensure_vector_table(conn)
-        _insert_indexed_image(conn, image, clip_embedder, thumbnail_path=None)
+        _insert_indexed_image(conn, image, embedder, thumbnail_path=None)
         conn.commit()
 
     results = service.search("new car", limit=1)
@@ -365,15 +365,15 @@ def test_search_service_finds_newly_committed_vectors(tmp_path: Path) -> None:
 def _insert_indexed_image(
     conn,
     image: ImageFile,
-    clip_embedder: StubClipEmbedder,
+    embedder: StubEmbedder,
     thumbnail_path: Path | None,
 ) -> None:
     ensure_vector_table(conn)
     upsert_indexed_image(
         conn,
         image,
-        clip_embedder.name,
-        clip_embedder.embed_image(image.path),
+        embedder.name,
+        embedder.embed_image(image.path),
         thumbnail_path=thumbnail_path,
     )
 
@@ -381,7 +381,7 @@ def _insert_indexed_image(
 def _insert_face_image(
     conn,
     image_path: Path,
-    clip_embedder: StubClipEmbedder,
+    embedder: StubEmbedder,
 ) -> int:
     ensure_vector_table(conn)
     return upsert_indexed_image(
@@ -393,8 +393,8 @@ def _insert_face_image(
             created_at=None,
             modified_at=image_path.stat().st_mtime,
         ),
-        clip_embedder.name,
-        clip_embedder.embed_image(image_path),
+        embedder.name,
+        embedder.embed_image(image_path),
         thumbnail_path=None,
     )
 

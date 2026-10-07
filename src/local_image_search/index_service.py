@@ -7,7 +7,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from local_image_search.clip import ClipEmbedder
 from local_image_search.db import (
     connect,
     delete_missing_paths,
@@ -21,6 +20,7 @@ from local_image_search.db import (
     upsert_faces_for_image,
     upsert_indexed_image,
 )
+from local_image_search.embedder import Embedder
 from local_image_search.face_detection import FaceDetector
 from local_image_search.scanner import scan_images
 from local_image_search.thumbnails import ensure_thumbnail
@@ -83,7 +83,7 @@ ProgressCallback = Callable[[IndexProgress], None]
 def index_roots(
     db_path: Path,
     roots: Iterable[Path],
-    clip_embedder: ClipEmbedder,
+    embedder: Embedder,
     face_detector: FaceDetector | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> IndexProgress:
@@ -107,25 +107,25 @@ def index_roots(
             progress.phase = "preparingDatabase"
             _notify(on_progress, progress)
             init_db(conn)
-            ensure_vector_table(conn, clip_embedder.dimensions)
+            ensure_vector_table(conn, embedder.dimensions)
             for image in images:
                 progress.phase = "indexing"
                 progress.last_file = image.file_name
                 _notify(on_progress, progress)
-                clip_stale = needs_indexing(
+                embedding_stale = needs_indexing(
                     conn,
                     image,
-                    clip_embedder.name,
-                    clip_embedder.dimensions,
+                    embedder.name,
+                    embedder.dimensions,
                 )
 
-                if clip_stale:
-                    embedding = clip_embedder.embed_image(image.path)
+                if embedding_stale:
+                    embedding = embedder.embed_image(image.path)
                     thumbnail_path = ensure_thumbnail(image.path, thumbnail_dir=thumbnail_dir)
                     image_id = upsert_indexed_image(
                         conn,
                         image,
-                        clip_embedder.name,
+                        embedder.name,
                         embedding,
                         thumbnail_path,
                     )
@@ -174,11 +174,11 @@ class BackgroundIndexService:
     def __init__(
         self,
         db_path: Path,
-        clip_embedder: ClipEmbedder,
+        embedder: Embedder,
         face_detector: FaceDetector | None = None,
     ) -> None:
         self.db_path = db_path
-        self.clip_embedder = clip_embedder
+        self.embedder = embedder
         self.face_detector = face_detector
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -218,7 +218,7 @@ class BackgroundIndexService:
             index_roots(
                 self.db_path,
                 roots,
-                self.clip_embedder,
+                self.embedder,
                 face_detector=self.face_detector,
                 on_progress=self._set_progress,
             )
@@ -235,6 +235,11 @@ class BackgroundIndexService:
             self._progress = progress.copy()
         finally:
             self._lock.release()
+
+    def wait(self) -> None:
+        """Let background indexing finish before disposing its embedder."""
+        if self._thread is not None:
+            self._thread.join()
 
 
 def _thumbnail_dir_for_db(db_path: Path) -> Path:

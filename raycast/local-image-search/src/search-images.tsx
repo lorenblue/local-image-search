@@ -21,7 +21,6 @@ type Preferences = {
   apiBaseUrl: string;
   projectDirectory: string;
   indexedFolders?: string;
-  clipModelPreset: string;
 };
 
 type SearchResult = {
@@ -93,10 +92,9 @@ type PrimaryFaceResponse = {
 type StatusResponse = {
   apiVersion: number;
   database: string;
-  clipEmbedder: string;
-  clipModelPreset: string | null;
-  clipEmbeddingDimensions: number;
-  clipModelLoaded: boolean;
+  embedder: string;
+  embeddingDimensions: number;
+  modelLoaded: boolean;
   indexEmbeddingDimensions: number | null;
   indexedImages: number;
   searchableImages: number;
@@ -131,7 +129,6 @@ const execFileAsync = promisify(execFile);
 export default function Command() {
   const preferences = getPreferenceValues<Preferences>();
   const apiBaseUrl = normalizeBaseUrl(preferences.apiBaseUrl);
-  const clipModelPreset = normalizeClipModelPreset(preferences.clipModelPreset);
   const [query, setQuery] = useState("");
   const [similarSource, setSimilarSource] = useState<SearchResult | null>(null);
   const [similarFaceSource, setSimilarFaceSource] =
@@ -163,7 +160,6 @@ export default function Command() {
         await ensureServerRunning(
           apiBaseUrl,
           preferences.projectDirectory,
-          clipModelPreset,
         );
         const indexedFolders = parseIndexedFolders(preferences.indexedFolders);
         let response = await fetchJson<StatusResponse>(
@@ -191,7 +187,7 @@ export default function Command() {
     return () => {
       cancelled = true;
     };
-  }, [apiBaseUrl, preferences.projectDirectory, preferences.indexedFolders, clipModelPreset]);
+  }, [apiBaseUrl, preferences.projectDirectory, preferences.indexedFolders]);
 
   useEffect(() => {
     if (!status?.indexing.running) {
@@ -501,16 +497,13 @@ function StatusItem({
     ? ` · ${indexingPhaseLabel(status.indexing)}`
     : "";
   const errorLabel = status.indexing.error ? " · indexing error" : "";
-  const modelLabel = status.clipModelPreset
-    ? ` · ${status.clipModelPreset}`
-    : "";
-  const modelLoadLabel = status.clipModelLoaded ? "" : " · loading model";
+  const modelLoadLabel = status.modelLoaded ? "" : " · loading model";
 
   return (
     <Grid.Item
       id="status"
       title="Local Image Search"
-      subtitle={`${status.searchableImages} searchable images${indexingLabel}${errorLabel}${modelLabel}${modelLoadLabel} · ${status.memory.currentMb.toFixed(0)} MB`}
+      subtitle={`${status.searchableImages} searchable images${indexingLabel}${errorLabel}${modelLoadLabel} · ${status.memory.currentMb.toFixed(0)} MB`}
       content={{ source: Icon.MagnifyingGlass }}
       actions={
         <ActionPanel>
@@ -705,9 +698,6 @@ function normalizeBaseUrl(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
-function normalizeClipModelPreset(value: string): string {
-  return value === "fast" ? "fast" : "better";
-}
 
 function scoreLabel(score: number): string {
   return score.toFixed(3);

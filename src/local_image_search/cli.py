@@ -6,11 +6,6 @@ import sys
 import time
 from pathlib import Path
 
-from local_image_search.clip import (
-    OPEN_CLIP_PRESET_ALIASES,
-    OPEN_CLIP_PRESETS,
-    make_clip_embedder,
-)
 from local_image_search.config import DEFAULT_DB_PATH
 from local_image_search.db import (
     connect,
@@ -23,6 +18,7 @@ from local_image_search.db import (
 )
 from local_image_search.face_detection import DEFAULT_FACE_DETECTOR, make_face_detector
 from local_image_search.face_review import write_face_review
+from local_image_search.gemma_embedder import EmbeddingGemma2Embedder
 from local_image_search.index_service import IndexProgress, index_roots
 from local_image_search.metrics import format_memory_status
 from local_image_search.search_service import SearchService
@@ -54,12 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     index_parser = subparsers.add_parser("index", help="Index one or more folders")
     index_parser.add_argument("roots", nargs="+", type=Path, help="Image files or folders")
-    index_parser.add_argument(
-        "--clip-embedder",
-        default="open-clip",
-        choices=["stub", "open-clip", "openclip", "clip"],
-    )
-    add_open_clip_arguments(index_parser)
+    add_gemma_arguments(index_parser)
     index_parser.add_argument(
         "--progress-every",
         type=int,
@@ -76,12 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser = subparsers.add_parser("search", help="Search indexed images")
     search_parser.add_argument("query", help="Natural language search query")
     search_parser.add_argument("--limit", type=int, default=10)
-    search_parser.add_argument(
-        "--clip-embedder",
-        default="open-clip",
-        choices=["stub", "open-clip", "openclip", "clip"],
-    )
-    add_open_clip_arguments(search_parser)
+    add_gemma_arguments(search_parser)
     search_parser.set_defaults(handler=handle_search)
 
     similar_parser = subparsers.add_parser(
@@ -90,12 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     similar_parser.add_argument("image", type=Path, help="Reference image path")
     similar_parser.add_argument("--limit", type=int, default=10)
-    similar_parser.add_argument(
-        "--clip-embedder",
-        default="open-clip",
-        choices=["stub", "open-clip", "openclip", "clip"],
-    )
-    add_open_clip_arguments(similar_parser)
+    add_gemma_arguments(similar_parser)
     similar_parser.set_defaults(handler=handle_similar)
 
     similar_face_parser = subparsers.add_parser(
@@ -109,12 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser = subparsers.add_parser("serve", help="Run the local search API")
     serve_parser.add_argument("--host", default="127.0.0.1")
     serve_parser.add_argument("--port", type=int, default=DEFAULT_API_PORT)
-    serve_parser.add_argument(
-        "--clip-embedder",
-        default="open-clip",
-        choices=["stub", "open-clip", "openclip", "clip"],
-    )
-    add_open_clip_arguments(serve_parser)
+    add_gemma_arguments(serve_parser)
     serve_parser.add_argument(
         "--face-detector",
         default=DEFAULT_FACE_DETECTOR,
@@ -144,22 +120,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def add_open_clip_arguments(parser: argparse.ArgumentParser) -> None:
+def add_gemma_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--clip-model-preset",
-        choices=sorted(OPEN_CLIP_PRESETS | OPEN_CLIP_PRESET_ALIASES),
-        default=None,
-        help="OpenCLIP preset to use when --clip-embedder is open-clip",
-    )
-    parser.add_argument(
-        "--clip-model",
-        default=None,
-        help="Override the OpenCLIP model name, for example ViT-B-32",
-    )
-    parser.add_argument(
-        "--clip-pretrained",
-        default=None,
-        help="Override the OpenCLIP pretrained weights",
+        "--gemma-model", type=Path, default=None,
+        help="Gemma .litertlm model path (or set GEMMA_MODEL_PATH)",
     )
 
 
@@ -184,32 +148,32 @@ def handle_status(args: argparse.Namespace) -> int:
 
 
 def handle_index(args: argparse.Namespace) -> int:
-    clip_embedder = make_configured_clip_embedder(args)
-    face_detector = make_face_detector(args.face_detector)
-    started = time.perf_counter()
+    with EmbeddingGemma2Embedder(args.gemma_model) as embedder:
+        face_detector = make_face_detector(args.face_detector)
+        started = time.perf_counter()
 
-    print(f"clip embedder: {clip_embedder.name}")
-    print(f"face detector: {face_detector.name}")
-    print(format_memory_status())
+        print(f"embedder: {embedder.name}")
+        print(f"face detector: {face_detector.name}")
+        print(format_memory_status())
 
-    result = index_roots(
-        args.db,
-        args.roots,
-        clip_embedder,
-        face_detector=face_detector,
-        on_progress=lambda progress: _print_index_progress(
-            progress,
-            started=started,
-            progress_every=args.progress_every,
-        ),
-    )
+        result = index_roots(
+            args.db,
+            args.roots,
+            embedder,
+            face_detector=face_detector,
+            on_progress=lambda progress: _print_index_progress(
+                progress,
+                started=started,
+                progress_every=args.progress_every,
+            ),
+        )
 
-    print(f"scanned: {result.total}")
-    print(f"indexed: {result.indexed}")
-    print(f"faces indexed: {result.faces_indexed}")
-    print(f"skipped unchanged: {result.skipped}")
-    print(f"deleted missing: {result.deleted}")
-    return 0
+        print(f"scanned: {result.total}")
+        print(f"indexed: {result.indexed}")
+        print(f"faces indexed: {result.faces_indexed}")
+        print(f"skipped unchanged: {result.skipped}")
+        print(f"deleted missing: {result.deleted}")
+        return 0
 
 
 def _print_index_progress(
@@ -246,15 +210,15 @@ def _format_elapsed(seconds: float) -> str:
 
 
 def handle_search(args: argparse.Namespace) -> int:
-    clip_embedder = make_configured_clip_embedder(args)
-    response = SearchService(args.db, clip_embedder).search(args.query, args.limit)
-    return _print_results(response["results"])
+    with EmbeddingGemma2Embedder(args.gemma_model) as embedder:
+        response = SearchService(args.db, embedder).search(args.query, args.limit)
+        return _print_results(response["results"])
 
 
 def handle_similar(args: argparse.Namespace) -> int:
-    clip_embedder = make_configured_clip_embedder(args)
-    response = SearchService(args.db, clip_embedder).similar(args.image, args.limit)
-    return _print_results(response["results"])
+    with EmbeddingGemma2Embedder(args.gemma_model) as embedder:
+        response = SearchService(args.db, embedder).similar(args.image, args.limit)
+        return _print_results(response["results"])
 
 
 def handle_similar_face(args: argparse.Namespace) -> int:
@@ -285,22 +249,12 @@ def _print_results(results: list[dict]) -> int:
 
 
 def handle_serve(args: argparse.Namespace) -> int:
-    clip_embedder = make_configured_clip_embedder(args, lazy=True)
-    face_detector = make_face_detector(args.face_detector)
-    from local_image_search.server import run_server
+    with EmbeddingGemma2Embedder(args.gemma_model) as embedder:
+        face_detector = make_face_detector(args.face_detector)
+        from local_image_search.server import run_server
 
-    run_server(args.db, clip_embedder, face_detector, args.host, args.port)
-    return 0
-
-
-def make_configured_clip_embedder(args: argparse.Namespace, *, lazy: bool = False):
-    return make_clip_embedder(
-        args.clip_embedder,
-        model_preset=args.clip_model_preset,
-        model_name=args.clip_model,
-        pretrained=args.clip_pretrained,
-        lazy=lazy,
-    )
+        run_server(args.db, embedder, face_detector, args.host, args.port)
+        return 0
 
 
 def handle_faces_review(args: argparse.Namespace) -> int:

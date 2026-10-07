@@ -41,24 +41,6 @@
       "type": "textfield",
       "required": false,
       "default": ""
-    },
-    {
-      "name": "clipModelPreset",
-      "title": "Search Model",
-      "description": "Local CLIP model preset. Changing this requires reindexing.",
-      "type": "dropdown",
-      "required": true,
-      "default": "fast",
-      "data": [
-        {
-          "title": "Fast - ViT-B-32",
-          "value": "fast"
-        },
-        {
-          "title": "Better - ViT-B-16",
-          "value": "better"
-        }
-      ]
     }
   ],
   "scripts": {

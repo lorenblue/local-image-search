@@ -5,15 +5,13 @@ description = "Local-first semantic image search for macOS and Raycast."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "litert-lm>=0.18.0",
   "pillow>=10.0",
   "psutil>=6.0",
   "sqlite-vec @ git+https://github.com/vlasky/sqlite-vec.git@v0.2.6-alpha",
 ]
 
 [project.optional-dependencies]
-ml = [
-  "open-clip-torch>=2.26",
-]
 heic = [
   "pillow-heif>=0.16",
 ]

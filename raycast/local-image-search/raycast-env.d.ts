@@ -13,9 +13,7 @@ type ExtensionPreferences = {
   /** Project Directory - Local Image Search project directory */
   "projectDirectory": string,
   /** Indexed Folders - Folders to sync when the extension opens. Separate multiple folders with commas. */
-  "indexedFolders": string,
-  /** Search Model - Local CLIP model preset. Changing this requires reindexing. */
-  "clipModelPreset": "fast" | "better"
+  "indexedFolders": string
 }
 
 /** Preferences accessible in all the extension's commands */

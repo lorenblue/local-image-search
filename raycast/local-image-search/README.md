@@ -4,6 +4,8 @@ Raycast UI for the local image search API.
 
 ## Run
 
+First complete the Python and model setup in the [project README](../../README.md).
+
 Run the extension:
 
 ```bash
@@ -20,8 +22,20 @@ Project Directory: ~/Projects/local-image-search
 Indexed Folders: ~/Pictures/TestPhotos
 ```
 
+Separate multiple indexed folders with commas or newlines.
+
 The extension starts the local API if needed and syncs indexed folders in the
 background when it opens.
+
+The extension always uses EmbeddingGemma 2. Place
+`embeddinggemma-2-text-vision-440m.litertlm` in `<Project Directory>/models/`.
+No model selection or model path is needed.
+
+Press Option+Enter to toggle multi-select mode, then Enter or Space to select
+images. Press Cmd+Shift+V to paste the selection.
+
+If startup or indexing fails, check `<Project Directory>/data/logs/server.log`
+and `http://127.0.0.1:8766/status` for the indexing error and progress.
 
 Multi-file paste uses the macOS file pasteboard and a simulated Command-V after
 Raycast closes. On macOS 27, allow Raycast in System Settings > Privacy &

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-from local_image_search.clip import ClipEmbedder
+from local_image_search.embedder import Embedder
 from local_image_search.face_detection import FaceDetector
 from local_image_search.index_service import BackgroundIndexService
 from local_image_search.search_service import SearchService
@@ -10,7 +12,7 @@ from local_image_search.search_service import SearchService
 
 def create_app(
     db_path: Path,
-    clip_embedder: ClipEmbedder,
+    embedder: Embedder,
     face_detector: FaceDetector | None = None,
 ):
     try:
@@ -19,9 +21,18 @@ def create_app(
     except ImportError as exc:
         raise RuntimeError("FastAPI server requires: python -m pip install -e '.[api]'") from exc
 
-    service = SearchService(db_path, clip_embedder)
-    indexer = BackgroundIndexService(db_path, clip_embedder, face_detector)
-    app = FastAPI(title="Local Image Search API")
+    service = SearchService(db_path, embedder)
+    indexer = BackgroundIndexService(db_path, embedder, face_detector)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(indexer.wait)
+            embedder.close()
+
+    app = FastAPI(title="Local Image Search API", lifespan=lifespan)
 
     @app.get("/scalar", include_in_schema=False)
     def scalar_reference():
@@ -110,7 +121,7 @@ def _sync_roots(payload: dict) -> list[str]:
 
 def run_server(
     db_path: Path,
-    clip_embedder: ClipEmbedder,
+    embedder: Embedder,
     face_detector: FaceDetector,
     host: str,
     port: int,
@@ -120,8 +131,8 @@ def run_server(
     except ImportError as exc:
         raise RuntimeError("FastAPI server requires: python -m pip install -e '.[api]'") from exc
 
-    app = create_app(db_path, clip_embedder, face_detector)
+    app = create_app(db_path, embedder, face_detector)
     print(f"serving search API on http://{host}:{port}")
-    print(f"using CLIP search with {clip_embedder.name}")
+    print(f"using semantic search with {embedder.name}")
     print(f"using face detection with {face_detector.name}")
     uvicorn.run(app, host=host, port=port)
